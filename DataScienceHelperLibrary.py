@@ -1,6 +1,7 @@
 """Small Library for very common uses.
 
-This module provides parameterizable functions for analysing data frames with log output.
+This module provides parameterizable functions 
+for analyzing data frames with log output.
 """
 
 __version__ = '0.1'
@@ -8,13 +9,28 @@ __author__ = 'Benjamin Wenner'
 
 
 from collections import defaultdict
+from encodings.aliases import aliases
+from multiprocessing import Pool
+from nltk.stem import WordNetLemmatizer
+from nltk.tokenize import word_tokenize
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.pipeline import FeatureUnion
+from sklearn import preprocessing
 
+import fnmatch as fnmatch
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import fnmatch as fnmatch
+import seaborn as sb
 
+import glob
 import os
-from multiprocessing import Pool
+import sys
+
+# Algorithms
+from sklearn.linear_model import LinearRegression
+from sklearn.decomposition import PCA
 
 
 def IsMatch(txt, wildcard):
@@ -23,7 +39,416 @@ def IsMatch(txt, wildcard):
 def PrintLine(text = '', number = 20, character = '-'):
     print(character * number, text, character * number)
 
-def ReadCsvFiles(files, delimiter = ','):
+def DfTailHead(df, count = 15):    
+    count = min(count, df.shape[0])
+    pd.concat([df.head(count), df.tail(count)])
+    
+def GetAsList(object):
+    '''
+    
+    '''
+    if str(type(object)) in [
+        'float', 'float32', 'float64', "<class 'float'>"
+        'int', 'int32', 'int64', "<class 'int'>", 
+        'str', "<class 'str'>" 
+    ]:
+        return [object]
+    if type(object) == list:
+        return object
+    if type(object) == set or type(object) == tuple:
+        return list[object]
+    if type(object) == np.ndarray:
+        return list(object.values)
+    raise ValueError('Type unknown: ', type(object))
+    
+def AnalyseColumn(df, column, analyseNan = False, analyseValueCounts = False):
+    '''
+    INPUT:
+    df: Dataframe
+    column: column name or list of names to analyse
+    '''
+    if not type(column) is list:
+        column = [column]    
+    PrintLine('Analysing column/s "{}"'.format(column))
+    for col in column:
+        print('Datatype (dtype) = ', df[col].dtype)
+        if analyseNan:
+            AnalyseNanColumns(df, col)
+        if analyseValueCounts:
+            AnalyseValueCounts(df, columns = col)
+    PrintLine('Finished analysing column/s "{}"'.format(column))
+
+def AnalyseNanColumns(df, columns = None):
+    '''
+    INPUT:
+    df: Dataframe
+    columns = None or column name or list of columns
+    '''
+    if df is None:
+        raise ValueError('Fnc "AnalyseNanColumns": df is None')
+    if columns is not None and type(columns) is not list:
+        columns = [columns]
+    PrintLine('Analysis of Columns with NaN values')
+    if columns is not None:
+        dfnull = df[columns].isnull().mean()
+    else:
+        dfnull = df.isnull().mean()
+    
+    if dfnull.shape[0] == 0:
+        print('All columns have values')
+        PrintLine('Analysis of Columns with NaN values finished')
+        return
+    renameDic = {}
+    for ind, index in enumerate(dfnull.index):
+        renameDic[dfnull.index[ind]] = str(index) + ', type: ' + str(df[index].dtype)
+    dfnull = dfnull.rename(renameDic)
+    tmp = dfnull[dfnull == 0]
+    if tmp.shape[0] > 0:
+        print('Columns having all values: {0}, {1:.2f}%'.format(len(tmp), len(tmp) * 100 / len(df.columns)))
+        print(tmp)
+    tmp = dfnull[(dfnull > 0) & (dfnull <= 0.05)]
+    if tmp.shape[0] > 0:
+        print('Columns having > 0% and <= 5% missing values: {0}, {1:.2f}%'.format(len(tmp), len(tmp) * 100 / len(df.columns)))
+        print(tmp)
+    tmp = dfnull[(dfnull > 0.05) & (dfnull <= 0.2)]
+    if tmp.shape[0] > 0:
+        print('Columns having > 5% and <= 20% missing values: {0}, {1:.2f}%'.format(len(tmp), len(tmp) * 100 / len(df.columns)))
+        print(tmp)
+    tmp = dfnull[(dfnull > 0.2) & (dfnull <= 0.5)]
+    if tmp.shape[0] > 0:
+        print('Columns having > 20% and <= 50% missing values: {0}, {1:.2f}%'.format(len(tmp), len(tmp) * 100 / len(df.columns)))
+        print(tmp)
+    tmp = dfnull[(dfnull > 0.5) & (dfnull <= 0.7)]
+    if tmp.shape[0] > 0:
+        print('Columns having > 50% and <= 70% missing values: {0}, {1:.2f}%'.format(len(tmp), len(tmp) * 100 / len(df.columns)))
+        print(tmp)
+    tmp = dfnull[dfnull > 0.7]
+    if tmp.shape[0] > 0:
+        print('Columns having > 70% missing values: {0}, {1:.2f}%'.format(len(tmp), len(tmp) * 100 / len(df.columns)))
+        print(tmp)
+    PrintLine('Analysis of Columns with NaN values finished')
+    
+
+    
+def AnalyseValueCounts(df, columns = None, types = None, considerMaxValues = 20):
+    '''
+    INPUT:
+    df: Dataframe
+    columns = None or column name or list of columns
+    types = None or columns with provided types
+    considerMaxValues: Print values if # is <= xrange
+    '''
+    if df is None:
+        raise ValueError('Fnc "AnalyseValueCounts": df is None')
+    if (considerMaxValues < 0 or considerMaxValues > 30):
+        raise ValueError('Fnc "AnalyseValueCounts": considerMaxValues < 0 or too large (> 30)', considerMaxValues)
+    logtxt = 'Considering columns: '
+    if columns is None or types is None:
+        if columns is None and types is None:
+            columns = list(df.columns)
+        elif types is None and columns is not None:
+            if not type(columns) is list:
+                columns = [columns]
+        elif types is not None:
+            columnstmp = list(SelectColumnsByType(df, types).columns)
+            if columns is None:
+                columns = columnstmp
+            else:
+                columns = [col for col in columnstmp if col in columns]
+            
+    if len(columns) == 0:
+        print('No columns to analyse value counts for. Passed columns and types: ', columns, types)
+        return
+    print(logtxt, columns)
+    PrintLine('Dataframe value counts analye started')
+    for col in columns:
+        PrintLine('', character = '*')
+        vcser = df[col].value_counts()
+        if vcser.shape[0] > considerMaxValues:
+            print('More than {} different values: '.format(considerMaxValues), vcser.shape[0])
+            print('Name: ', col, ', dtype: ', vcser.dtype)
+        else:
+            print(vcser)
+        PrintLine('', character = '*')
+    PrintLine('Dataframe value counts analye finished')
+    
+    
+    
+def AnalyseDataframe(df):
+    if df is None:
+        raise ValueError('Fnc "AnalyseDataframe": df is None')
+    PrintLine('Dataframe analysis started')
+    print('Shape = ', df.shape)
+    AnalyseNanColumns(df)
+    
+    
+    
+    
+    
+    PrintLine('Dataframe analysis finished')
+
+def AppendColumnByValuesInCell(df, column, newcolumn, values):
+    '''
+    INPUT:
+    df: Dataframe
+    column: column to search values
+    newcolumn: new column name
+    values: value or list of values
+    
+    OUTPUT:
+    returns dataframe with newcolumn where 1 means value from column
+            contains an item from values
+    '''
+    dfcopy = df.copy(deep = True)
+    dfcopy[newcolumn] = dfcopy[column].apply(lambda x: 1 if x is not np.NaN and any(val in x for val in values) else 0)
+    return dfcopy
+    
+def Apply10Encoding(df, column, vals, newcol = None, drop = True):
+    '''
+    INPUT:
+    df: Pandas Dataframe
+    column: column to encde with 1 or 0
+    vals: values to encode with 1
+    newcol: new column name
+    drop: if newcol provided, column will be dropped.
+    
+    OUTPUT:
+    df: data frame with columns of type 'object'
+    '''
+    if df is None:
+        raise ValueError('Fnc "Apply10Encoding": df is None')
+    if type(vals) is not list:
+        vals = [vals]
+    _encode = lambda x: 1 if x in vals else 0 
+    if newcol is None:
+        newcol = column
+        drop = False
+    df[newcol] = df[column].apply(_encode)
+    if drop:
+        return df.dropna()
+    return df
+
+def ApplyOneHotEncodingOnColumnWithMultiValuesInCell(df, column, values, drop = True, ignoreEmpty = True):
+    '''
+    INPUT:
+    df: Pandas Dataframe
+    column: column name
+    drop: Drop column
+    
+    OUTPUT:
+    df: Dataframe with one hot encoded column
+    '''
+    if df is None:
+        raise ValueError('Fnc "Apply10Encoding": df is None')
+    if df[column].dtype != 'O':
+        raise ValueErro('Fnc "Apply10Encoding": Invalid dtype "{}" for column "{}""'.format(df[columns].dtype, column))
+    dfcopy = df.copy(deep = True)
+    newcolumns = []
+    PrintLine('Start applying one hot encoding for columns "{}" and values "{}"'.format(column, values))
+    print('Columns before one hot encoding: ', dfcopy.shape[1])
+    for val in GetAsList(values):
+        newcol = column + '_' + val
+        newcolumns.append(newcol)
+        #dfcopy[newcol] = dfcopy[dfcopy[column].apply(lambda x: 1 if val in x else 0)]
+        dfcopy[newcol] = dfcopy[column].str.contains(val, regex = False) * 1
+        if ignoreEmpty:
+            val = list(dfcopy[newcol].unique())
+            if len(val) == 1:
+                dfcopy = dfcopy.drop(newcol, axis = 1)
+                print('New column "', newcol, '" dropped, only this value present: ', val)
+    if drop:
+        dfcopy = dfcopy.drop(column, axis = 1)
+    print('New columns are: ', newcolumns)
+    PrintLine('Finished applying one hot encoding')
+    return dfcopy    
+    
+def ApplyOneHotEncoding(df, columns, ignoreEmpty = True):
+    '''
+    INPUT:
+    df: Pandas Dataframe
+    columns: column name or list of columns
+    OUTPUT:
+    df, newcols: Dataframe with one hot encoded columns that were passed and list of new columns.
+    '''
+    if df is None:
+        raise ValueError('Fnc "ApplyFillMissingValuesWithMean": df is None')
+    if columns is None or len(columns) < 1:
+        print('Fnc "OneHotEncodeColumns": columns is empty/None')
+        return df
+    if not type(columns) is list:
+        columns = [columns]
+    ohdf = df.copy(deep = True)
+    colbefore = list(ohdf.columns)
+    PrintLine('Start applying one-hot encoding on: {}'.format(columns))
+    print('Columns before one hot encoding: ', df.shape[1])
+    print('Columns to be removed and replaced: ', columns)
+    ohdf = pd.get_dummies(ohdf, columns = columns)
+    colsafter = list(ohdf.columns)
+    print('Size after encoding: ', len(colsafter))
+    colsremoved = []
+    for col in columns:
+        if not col in colsafter:
+            colsremoved.append(col)
+    if len(columns) == len(colsremoved):
+        newcols = []
+        for col in list(ohdf.columns):
+            if col in colbefore or col in colsremoved:
+                continue
+            newcols.append(col)
+        print('Columns successfully one hot encoded :)  New columns are: ', newcols)
+    
+    print('Removed columns after one hot encoding: ', colsremoved)
+    PrintLine('Finished applying one-hot encoding')
+    return ohdf, newcols
+
+def ApplyFillMissingValuesWithMean(df):
+    '''
+    INPUT:
+    df: Pandas Dataframe
+    
+    OUTPUT:
+    df: Dataframe and nan values filled with mean
+    '''
+    if df is None:
+        raise ValueError('Fnc "ApplyFillMissingValuesWithMean": df is None')
+    fill_na = lambda x: x.fill_na(x.mean())
+    df.apply(fill_na, axis = 0)
+    return df
+
+    
+
+def ConvertColumnToType(df, columns, newtype = 'float64', replace = None):
+    '''
+    INPUT:
+    df: Pandas Dataframe
+    columns: Column/s to convert
+    newtype: Final type
+    replace: Dictionary like { '': { "rep1", "rep2", ...} }
+    
+    OUTPUT:
+    Dataframe with converted column
+    '''
+    if df is None:
+        raise ValueError('Fnc "ConvertColumnToType": df is None')
+    dfcopy = df.copy(deep = True)
+    if type(columns) is not list:
+        columns = [columns]
+    PrintLine('Start replacing and converting columns')
+    for col in columns:
+        if replace is not None:
+            if type(replace) is not dict:
+                raise ValueError('Fnc "ConvertColumnToType": type of replace is no dictionary: ', replace)
+            for key in replace.keys():
+                if df[col].dtype == newtype:
+                    print('Column "{}" dtype is already {}'.format(col, newtype))
+                    break
+                val = replace[key]
+                for repval in val:
+                    print('Replacing "{}" with "{}"'.format(repval, key))
+                    dfcopy[col] = dfcopy[col].apply(lambda x: x.replace(repval, key).strip() if type(x) is str else x)
+        dfcopy[col] = dfcopy[col].astype(newtype)
+        print('New type of {} is: {}'.format(col, dfcopy[col].dtype))
+    PrintLine('Replacing and converting columns finished')
+    return dfcopy
+
+def CleanValuesInColumn(df, columns, trim = True, clean = None):
+    '''
+    INPUT:
+    df: Dataframe
+    columns: column name or list of columns
+    trim: remove leading and trailing spaces
+    clean: dictionary<string, list<string>>: replace any string value in list with key
+    
+    OUTPUT:
+    Dataframe with cleaned column/s
+    '''
+    if df is None:
+        raise ValueError('Fnc "GetUniqueValuesFromColumn": df is None')
+    dfcopy = df.copy(deep = True)
+    if type(columns) is not list:
+        columns = [columns]
+    PrintLine('Start cleaning values in columns:')
+    for col in columns:
+        if dfcopy[col].dtype == 'O':
+            applied = ''
+            if clean is not None:
+                for key in clean.keys():
+                    repvalues = clean[key]
+                    if len(repvalues) == 1:
+                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False)
+                        applied = 'replaced "{}" for "{}"'.format(key, repvalues)
+                    elif len(repvalues) == 2:
+                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False).str.replace(repvalues[1], key, regex = False)
+                        applied = 'replaced "{}" for "{}"'.format(key, repvalues)
+                    elif len(repvalues) == 3:
+                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False).str.replace(repvalues[1], key, regex = False).str.replace(repvalues[2], key, regex = False)
+                        applied = 'replaced "{}" for "{}"'.format(key, repvalues)
+                    elif len(repvalues) == 4:
+                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False).str.replace(repvalues[1], key, regex = False).str.replace(repvalues[2], key, regex = False).str.replace(repvalues[3], key, regex = False)
+                        applied = 'replaced "{}" for "{}"'.format(key, repvalues)
+                    else:
+                        print('Number of replace values not supported: ', len(repvalues))
+            if trim:
+                dfcopy[col] = dfcopy[col].apply(lambda x: x.strip() if x is not np.NaN else x)
+                if len(applied) > 0:
+                    applied = applied + ', '
+                applied = applied + 'trimmed'
+            if len(applied) > 0:
+                print('Applied on "{}": '.format(col), applied)
+        else:
+            print('Cannot apply cleaning on column "{}", dtype is: '.format(col, dfcopy[col].dtype))
+    PrintLine('Finished cleaning values in columns:')
+    return dfcopy
+    
+def CountMissingValuesInColumn(df, column):
+    '''
+    INPUT:
+    df: Dataframe
+    column: Column/s to count values
+    
+    OUTPUT:
+    dfs: list of missing values
+    '''
+    if df is None:
+        raise ValueError('Fnc "CountMissingValuesInColumn": df is None')
+    if type(column) is str:
+        if len(column) == 0:
+            raise ValueError('Fnc "CountMissingValuesInColumn": column name is empty')
+        column = [column]
+    if column is None or len(column) < 0:
+        raise ValueError('Fnc "CountMissingValuesInColumn": files is None or empty')
+    results = []
+    dfnull = df.isnull().sum()
+    for col in column:
+        results.append(dfnull[col])
+    return results
+
+'''
+def ReadCsvFiles(directory, wildcards, extract = False, delimeter = ','):
+    
+    INPUT:
+    directory: directory relative to notebook
+    wildcards: List of file names
+    
+    OUTPUT:
+    dfs: overall status (bool) all succ, list of data frames
+'''
+'''    
+    if directory is None or len(directory) == 0:
+        raise ValueError('Fnc "ReadCsvFiles": directory is None/empty')
+    if wildcards is None or len(wildcards) == 0:
+        raise ValueError('Fnc "ReadCsvFiles": wildcards is None/empty')
+    wildcards = GetAsList(wildcards)
+    try:
+        files = []
+        for wc in wildcards:
+            
+    
+    except:
+        raise ValueError('Fnc "ReadCsvFiles": df is None')
+'''
+    
+def ReadCsvFiles(files, delimiter = ',', merge = False):
     '''
     INPUT:
     files: List of file names
@@ -33,23 +458,38 @@ def ReadCsvFiles(files, delimiter = ','):
     '''
     if files is None or len(files) < 0:
         raise ValueError('Fnc "ReadCsvFiles": files is None or empty')
-    if type(files) is str:
+    if type(files) is not list:
         files = [files]
-    dfs = []
-    allsucc = True
+    dfs = {}
     PrintLine('Start reading files')
+    notworked = []
     for file in files:
         try:
-            print('Reading: ', file)
             curdf = pd.read_csv(file, delimiter = delimiter)
-            dfs.append(curdf)
+            dfs[file] = curdf
+            print('Dataframe loaded from {}: shape = {}'.format(file, curdf.shape))
         except Exception as e:
             print('Could not read file ', file, ': ', str(e))
-            allsucc = False
-            dfs.append(None)
+            notworked.append(file)
+            dfs[file] = None
     log = 'Reading files successfully finished'
-    if not allsucc:
-        log = 'Reading files finished with errors'
+    
+    if len(notworked) > 0:
+        for file in notworked:
+            print('Trying to load file with encodings: ', file)
+            for encoding in set(aliases.values()):
+                try:
+                    curdf = pd.read_csv(file, encoding = encoding)
+                    dfs[file] = curdf
+                    print('Encoding found to load file: ', encoding)
+                    break
+                except:
+                    pass
+    allsucc = True
+    for key, val in enumerate(dfs):
+        if val is None:
+            print('File could not be loaded: ', key)
+            allsucc = False
     PrintLine(log)
     return allsucc, dfs 
     
@@ -65,19 +505,7 @@ def GetColumnsHavingNan(df):
         raise ValueError('Fnc "GetColumnsHavingNan": df is None')
     return df.isnull()
 
-def GetColumnsHavingNoNan(df):
-    '''
-    INPUT:
-    df: Pandas Dataframe
     
-    OUTPUT:
-    lst: returns list of columns having no nan values
-    '''
-    if df is None:
-        raise ValueError('Fnc "GetColumnsHavingNoNan": df is None')
-    return df[~df.isnull().any()]
-    #return df[~df.isnull().mean() == 0]
-
 def GetColumnHavingNanPercent(df, percent):
     '''
     INPUT:
@@ -92,9 +520,23 @@ def GetColumnHavingNanPercent(df, percent):
         raise ValueError('Fnc "GetColumnsHavingNanPercent": percent is out of bounds [0,1]: ', percent)
     return df[df.columns[df.isnull().mean() > percent]]
 
+    
+def GetColumnsHavingNoNan(df):
+    '''
+    INPUT:
+    df: Pandas Dataframe
+    
+    OUTPUT:
+    lst: returns list of columns having no nan values
+    '''
+    if df is None:
+        raise ValueError('Fnc "GetColumnsHavingNoNan": df is None')
+    return df[~df.isnull().any()]
+    #return df[~df.isnull().mean() == 0]
+
 
     
-def GetPropAInGroupB(df, prop, group):
+def GetPropInGroupB(df, group, prop = None):
     '''
     INPUT:
     df: Pandas Dataframe
@@ -111,7 +553,181 @@ def GetPropAInGroupB(df, prop, group):
         raise ValueError(str.format('Fnc "GetPropAInGroupB": prop: column "{}" not in dataframe', prop))
     if not group in df.columns:
         raise ValueError(str.format('Fnc "GetPropAInGroupB": group: column "{}" not in dataframe', group))
-    return df.groupby(group).mean()[prop]
+    dfmean = df.groupby(group).mean()
+    if prop is None:
+        return dfmean
+    return dfmean[prop]
+
+def GetUniqueValuesListFromColumn(df, column, trim = False, clean = None, splitby = None, asc = None, ignoreempty = False):
+    '''
+    INPUT:
+    df: Dataframe
+    column: Column name
+    trim: Trim values
+    clean: Dictionary to clean values before split.
+    split: String to split cell value. For example: "A,B,C" -> ["A", "B", "C"]
+    asc: Define sorting
+    ignoreempty: Empty values are excluded from result
+    
+    OUTPUT:
+    List of unique values
+    '''
+    if df is None:
+        raise ValueError('Fnc "GetUniqueValuesFromColumn": df is None')
+    if type(column) is not str:
+        raise ValueError('Fnc "GetUniqueValuesFromColumn": column is not string: "', column, '"')
+    dfcopy = None
+    if trim or clean is not None:
+        dfcopy = CleanValuesInColumn(df, column, trim, clean)
+    else:
+        dfcopy = df.copy(deep = True)
+    vals = dfcopy[column].unique()
+    finalVals = []
+    if splitby is None:
+        finalVals = vals
+    elif dfcopy[column].dtype == 'O':
+        for val in vals:
+            splitted = val.split(splitby)
+            for splitvalue in splitted:
+                if splitvalue in finalVals:
+                    continue
+                finalVals.append(splitvalue)
+        if trim:
+            for ind in range(len(finalVals)):
+                if type(finalVals) is not str:
+                    continue
+                finalVals[ind] = finalVals[ind].strip()
+    if ignoreempty:
+        finalVals = [x for x in finalVals if type(x) is str and len(x) > 0]
+    if asc is not None:
+        if type(asc) is bool:
+            finalVals.sort(reverse = asc == False)
+    PrintLine('Column "{}" has {} unique values'.format(column, len(finalVals)))
+    return finalVals
+
+def PlotHeatmap(df, method = 'spearman', square = True, vmax = 1.0):
+    '''
+    INPUT:
+    df: Dataframe
+    strategy: Strategy for computation
+    axis: Axis/orientation
+    
+    OUTPUT:
+    Dataframe with imputedp9 columns that were passed.
+    '''
+    if df is None:
+        raise ValueError('Fnc "PlotHeatmap": df is None')
+    corMatData = df.copy(deep = True)
+    corMat = corMatData.corr(method = method)
+    fig, ax = plt.subplots()
+    sb.heatmap(corMat, square = square, vmax = vmax)
+    plt.show()
+    return corMat
+    
+    
+def ImputeNanValues(df, impute = 'NaN', strategy = 'median', axis = 0):
+    '''
+    INPUT:
+    df: Dataframe
+    strategy: Strategy for computation
+    axis: Axis/orientation
+    
+    OUTPUT:
+    Dataframe with imputedp9 columns that were passed.
+    '''
+    if df is None:
+        raise ValueError('Fnc "NormalizeColumns": df is None')
+    dfcopy = df.copy(deep = True)
+    imputer = preprocessing.Imputer( missing_values = impute, strategy = strategy, axis = axis)
+    impar = imputer.fit_transform(dfcopy)
+    dfimp = pd.DataFrame(impar, columns = list(dfcopy.columns))
+    return dfimp
+    
+def MinMaxOfSeries(serie):
+    return min(serie), max(serie)
+
+def NormalizeSeries(serie):
+    s_min, s_max = MinMaxOfSeries(serie)
+    return (serie - s_min) / (s_max - s_min)
+
+
+def NormalizeColumns(df, columns = None, newCols = None):
+    '''
+    INPUT:
+    df: Dataframe
+    columns: string or list of strings
+    
+    OUTPUT:
+    Dataframe with normalized columns that were passed.
+    '''
+    if df is None:
+        raise ValueError('Fnc "NormalizeColumns": df is None')
+    dfcopy = df.copy(deep = True)
+    if columns is None:
+        columns = list(dfcopy.columns)
+    else:
+        columns = GetAsList(columns)
+    if newCols is None:
+        newCols = columns
+    else:
+        newCols = GetAsList(newCols)
+    PrintLine('Start normalizing ', len(columns), ' columns')
+    for ind, col in enumerate(columns):
+        meanBefore = dfcopy[col].mean()
+        dfcopy[newCols[ind]] = NormalizeSeries(dfcopy[col])
+        meanAfter = dfcopy[col].mean()
+        print('Normalized column {0}: mean changed from {1} to {2}'.format(newCols[ind], meanBefore, meanAfter))
+    print('Finished normalizing columns')
+    return dfcopy
+
+
+def ReduceDimensions_PCA(df, n_comp = None, columns = None):
+    '''
+    INPUT:
+    df: Pandas Dataframe
+    n_comp: Number of pca components
+    columns: possible list of columns. If None, all columns are used
+    OUTPUT:
+    df: Dataframe whose rows all have values
+    '''
+    if df is None:
+        raise ValueError('Fnc "ReduceDimensions_PCA": df is None')
+    if columns is None:
+        columns = list(df.columns)
+    if n_comp is None:
+        n_comp = len(df.columns)
+    dfcopy = df[columns].copy(deep = True)
+    _pca = PCA(n_components = n_comp)
+    dfcopy = _pca.fit_transform(dfcopy)
+    return pd.DataFrame(dfcopy), _pca
+    
+def PCAPlotExplainedVariances(pca, features = None):
+    '''
+    INPUT:
+    pca: PCA components
+    features: Number of features to analyze
+    '''
+    variances = [val / 100 for val in pca.explained_variance_]
+    if features is None or features <= 0:
+        features = len(variances)
+    plt.title('Analysis of principal components')
+    plt.ylabel('Explained Variance')
+    plt.xlabel('Number of Components')
+    _ = plt.bar(range(0, features), variances[:features])
+    
+def PCAPlotCumulatedVariances(pca, features = None):
+    '''
+    INPUT:
+    pca: PCA components
+    features: Number of features to analyze
+    '''
+    variances = [val / 100 for val in pca.explained_variance_]
+    if features is None or features <= 0:
+        features = len(variances)
+    plt.title('Analysis of principal components')
+    plt.ylabel('Cumulated Explained Variance')
+    plt.xlabel('Number of Components')
+    _ = plt.plot(range(0, features), np.cumsum(variances)[:features])
 
 def RemoveAllRowsHavingAnyMissingValue(df, log = True):
     '''
@@ -129,52 +745,50 @@ def RemoveAllRowsHavingAnyMissingValue(df, log = True):
             print('Column will be removed from dataframe: ', remcol)
     return df.dropna()
 
-def SplitDataByValuesInColumn(df, column, values):
-    '''
-    INPUT:
-    df: Pandas Dataframe
-    column: Column name
-    values: list of list of values. For example: [ [val1_A, val2_A], [val1_B, val2_B] ] 
-    results in two dataframes. Values of passed column are in [val1_A, val2_A] for first data frame 
-    and values for passed column are in [val1_B, val2_B] for seccond dataframe.
-    '''
-    if df is None:
-        raise ValueError('Fnc "SplitDataByValuesInColumn": df is None')
-    dflist = []
-    for valueList in values:
-        newdf = df[df[column].isin(valueList)]
-        dflist.append(newdf)
-    return dflist
+
     
-def SelectColumnsByWildcard(df, wildcards):
+def AnalysePCAResult(pca, pcaind, usedComponents, df, text = False, consider = 0.08):
+    dfpcp = pd.DataFrame(pca.components_[pcaind], index = df.columns)
+    dfpcp['ordered'] = np.abs(dfpcp)
+    dfpcp = dfpcp.sort_values('ordered', axis = 0, ascending = False)
+    rng = int(len(df.columns))
+    if (text):
+        for ind in range(rng):
+            print(dfpcp.index[ind], ': ', dfpcp.values[ind])
+    
+    dfpcp = dfpcp.drop('ordered', axis = 1)
+    
+    rng = int(rng / 3)
+    
+    collist = [np.random.rand(3,) for i in range(rng)]
+    consider = abs(consider)
+    dfpcp = dfpcp[(dfpcp[0] > consider) | (dfpcp[0] < -consider)]
+    dfpcptp = dfpcp.transpose()
+    ax = dfpcptp.plot(kind = 'bar', color = collist)
+    ax.figure.set_size_inches(int(rng / 3), 8)
+    ax.set_title('PCA component # ' + str(pcaind + 1))
+    
+def RemoveColumnsByPercent(df, percent):
     '''
     INPUT:
     df: Dataframe
-    wildcards: string or list of strings
+    percent: number between 0 and 1
     
-    output: Dataframe with columns
+    OUTPUT:
+    Dataframe without those columns
     '''
     if df is None:
-        raise ValueError('Fnc "SelectColumnsByWildcard": df is None')
-    if wildcards is None or len(wildcards) < 1:
-        raise ValueError('Fnc "SelectColumnsByWildcard": No wildcards passed: ', wildcards)
-    rem = []
-    if type(wildcards) is str:
-        wildcards = [wildcards]
-    allColumns = list(df.columns)
-    PrintLine('Start finding and keeping columns matchting to wildcards: '.format(wildcards))
-    keep = []
-    for col in allColumns:
-        for wc in wildcards:
-            if IsMatch(col, wc):
-                keep.append(col)
-                break
-    if len(keep) == 0:
-        print('No column names found matchting to wildcards')
+        raise ValueError('Fnc "RemoveColumnsByPercent": df is None')
+    dfcopy = df.copy(deep = True)
+    cols2remove = GetColumnHavingNanPercent(dfcopy, percent)
+    PrintLine('Start finding columns with % missing values >= {}'.format(percent * 100))
+    if cols2remove.shape[0] > 0:
+        print('Columns will be removed: ', list(cols2remove.columns))
     else:
-        print('Columns found to keep: ', keep)
-    PrintLine('Finished keeping columns matchting to wildcards')
-    return df[ keep ]
+        print('No columns found')
+    PrintLine('Finished finding columns')
+    return dfcopy[[col for col in dfcopy.columns if col not in cols2remove]]
+
     
     
 def RemoveColumnsByWildcard(df, wildcards):
@@ -183,17 +797,19 @@ def RemoveColumnsByWildcard(df, wildcards):
     df: Dataframe
     wildcards: string or list of strings
     
-    output: Dataframe without columns
+    OUTPUT: 
+    Dataframe without columns
     '''
     if df is None:
         raise ValueError('Fnc "RemoveColumnsByWildcard": df is None')
     if wildcards is None or len(wildcards) < 1:
         raise ValueError('Fnc "RemoveColumnsByWildcard": No wildcards passed: ', wildcards)
     rem = []
-    if type(wildcards) is str:
+    if type(wildcards) is not list:
         wildcards = [wildcards]
     allColumns = list(df.columns)
-    PrintLine('Start finding and removing columns matchting to wildcards: '.format(wildcards))
+    PrintLine('Start finding and removing columns matchting to wildcards: {}'.format(wildcards))
+    dfcopy = df.copy(deep = True)
     for col in allColumns:
         for wc in wildcards:
             if IsMatch(col, wc):
@@ -205,17 +821,17 @@ def RemoveColumnsByWildcard(df, wildcards):
     else:
         print('Columns found to remove: ', rem)
     PrintLine('Finished removing columns matchting to wildcards')
-    return df[ keep ]
+    return dfcopy[ keep ]
     
-def RemoveColumnsByPercent(df, percent):
-    if df is None:
-        raise ValueError('Fnc "RemoveColumnsByPercent": df is None')
-    cols2remove = GetColumnHavingNanPercent(df, percent)
-    if cols2remove.shape[0] > 0:
-        print('Columns will be removed: ', list(cols2remove.columns))
-    return df[[col for col in df.columns if col not in cols2remove]]
 
 def RemoveColumnsHavingOnlyOneValue(df):
+    '''
+    INPUT:
+    df: Dataframe
+    
+    OUTPUT: 
+    Dataframe without columns
+    '''
     if df is None:
         raise ValueError('Fnc "RemoveColumnsHavingOnlyOneValue": df is None')
     PrintLine('Start searching and removing columns with one value:')
@@ -250,39 +866,129 @@ def RemoveRowsByThresh(df, thresh, subset = None):
     INPUT:
     df: Pandas Dataframe
     thresh: Require that many non-NA values.
+    subset: Columns to consider. If None, all columns are considered.
     
     OUTPUT:
     df: Dataframe with rows having at least 'thresh' values <> nan
     '''
     if df is None:
         raise ValueError('Fnc "RemoveRowsByThresh": df is None')
-    if subset is not None and type(subset) is str:
+    dfcopy = df.copy(deep = True)
+    if subset is not None and type(subset) is not list:
         subset = [subset]
-    return df.dropna(thresh = thresh, subset = subset)
+    dfcopy = dfcopy.dropna(thresh = thresh, subset = subset)
+    PrintLine('Rows removed by thresh = "{}": {}'.format(thresh, df.shape[0] - dfcopy.shape[0]))
+    return dfcopy
 
 def RemoveRowsWithValueInColumn(df, column, values):
+    '''
+    INPUT: 
+    df: Dataframe
+    column: string or collection of strings
+    values: values to search in column. If row with value found, it will be removed.
+    
+    OUTPUT:
+    Dataframe without rows having values in column
+    '''
     if df is None:
         raise ValueError('Fnc "RemoveRowsWithValueInColumn": df is None')
-    if type(values) is str:
+    if type(values) is not list:
         values = [values]
     dfret = df[~df[column].isin(values)]
     print('{} rows (ca. {}%) have been removed with value/s "{}" in column "{}"'.format(df.shape[0] - dfret.shape[0], "{0:.2f}".format((df.shape[0] - dfret.shape[0]) * 100 / df.shape[0]), values, column))
     return df[~df[column].isin(values)]
     
-def ApplyFillMissingValuesWithMean(df):
+
+def ScaleFrame(df, copy = True, withMean = True, withStd = True):
+    '''
+    INPUT: 
+    df: Dataframe
+    
+    OUTPUT:
+    Scaled dataframe (default with mean = 0 and std = 1 to avoid negative side effects from outliners)
+    '''
+    
+    if df is None:
+        raise ValueError('Fnc "ScaleValues": df is None')
+    dfcopy = df.copy(deep = True)
+    scaler = preprocessing.StandardScaler(copy = copy, with_mean = withMean, with_std = withStd)
+    
+    scaledar = scaler.fit_transform(dfcopy)
+    
+    return pd.DataFrame(scaledar, columns = list(dfcopy.columns)), scaler
+
+def ScaleValues(X, y, copy = True, withMean = True, withStd = True):
+    '''
+    INPUT: 
+    df: Dataframe
+    
+    OUTPUT:
+    Scaled dataframe (default with mean = 0 and std = 1 to avoid negative side effects from outliners)
+    '''
+    scaler = preprocessing.StandardScaler(copy = copy, with_mean = withMean, with_std = withStd)
+    _ = scaler.fit(X, y)
+    XScaled = scaler.transform(X, y)
+    
+    return XScaled, scaler
+    
+def SplitDataInBinaryColumn(df, column):
     '''
     INPUT:
     df: Pandas Dataframe
+    column: Column name
     
     OUTPUT:
-    df: Dataframe and nan values filled with mean
+    List of dataframes splitted by values
     '''
     if df is None:
-        raise ValueError('Fnc "ApplyFillMissingValuesWithMean": df is None')
-    fill_na = lambda x: x.fill_na(x.mean())
-    df.apply(fill_na, axis = 0)
-    return df
+        raise ValueError('Fnc "SplitDataByValuesInColumn": df is None')
+    values = list(df[column].unique())
+    if len(values) > 2:
+        raise ValueError('Fnc "SplitDataByValuesInColumn": more than 2 values in column ', column)
+    list1 = []
+    list2 = []
+    list3 = []
+    list1.append(values[0])
+    list2.append(values[1])
+    list3.append(list1)
+    list3.append(list2)
+    return SplitDataByValuesInColumn(df, column, list3)
+    
+def SplitDataByValuesInColumn(df, column, values):
+    '''
+    INPUT:
+    df: Pandas Dataframe
+    column: Column name
+    values: list of list of values. For example: [ [val1_A, val2_A], [val1_B, val2_B] ] 
+    results in two dataframes. Values of passed column are in [val1_A, val2_A] for first data frame 
+    and values for passed column are in [val1_B, val2_B] for seccond dataframe.
+    
+    OUTPUT:
+    List of dataframes splitted by values
+    '''
+    if df is None:
+        raise ValueError('Fnc "SplitDataByValuesInColumn": df is None')
+    dflist = []
+    log = 'Start splitting data by values ' + str(values) + ' in column: ' + str(column)
+    PrintLine(log)
+    for valueList in values:
+        newdf = df[df[column].isin(valueList)]
+        print('New dataframe, based on value list', valueList, ', with shape: ', newdf.shape)
+        dflist.append(newdf)
+    PrintLine('Finished splitting data')
+    return dflist
 
+def SplitDataTrainTest(X, y, testSize = 0.3, randomState = 42):
+    '''
+    INPUT:
+    X: Features
+    y: Result
+    
+    returns XTrain, XTest, yTrain, yTest
+    '''
+    XTrain, XTest, yTrain, yTest = train_test_split(X, y, test_size = testSize, random_state = randomState)
+    return XTrain, XTest, yTrain, yTest
+    
 def SplitDataInXY(df, colx, coly):
     '''
     INPUT:
@@ -290,12 +996,25 @@ def SplitDataInXY(df, colx, coly):
     colx: list of columns for X
     coly: list of columns for y
     
-    ret: data frames x, y splitted by colx, coly
+    OUTPUT:
+    data frames x, y splitted by colx, coly
     '''
     if df is None:
         raise ValueError('Fnc "SplitDataInXY": df is None')
     return df[colx], df[coly]
+    
 
+    
+def SelectColumnsByTypeObject(df):
+    '''
+    INPUT:
+    df: Pandas Dataframe
+    
+    OUTPUT:
+    df: data frame with columns of type 'object'
+    '''
+    return SelectColumnsByType(df, ['object'])
+    
 def SelectColumnsByType(df, typeinc, typeexc = None):
     '''
     INPUT:
@@ -317,246 +1036,58 @@ def SelectColumnsByType(df, typeinc, typeexc = None):
     '''
     if df is None:
         raise ValueError('Fnc "SelectColumnsByType": df is None')
-    if type(typeinc) is str:
+    if type(typeinc) is not list:
         typeinc = [typeinc]
     return df.select_dtypes(include = typeinc, exclude = typeexc)
 
-def SelectColumnsByTypeObject(df):
-    '''
-    INPUT:
-    df: Pandas Dataframe
-    
-    OUTPUT:
-    df: data frame with columns of type 'object'
-    '''
-    return SelectColumnsByType(df, ['object'])
-
-
-def Apply10Encoding(df, col, vals, newcol = None, drop = True):
-    '''
-    INPUT:
-    df: Pandas Dataframe
-    col: column to encde with 1 or 0
-    vals: values to encode with 1
-    newcol: new column name
-    drop: if newcol provided, col will be dropped.
-    
-    OUTPUT:
-    df: data frame with columns of type 'object'
-    '''
-    if df is None:
-        raise ValueError('Fnc "Apply10Encoding": df is None')
-    if type(vals) is str:
-        vals = [vals]
-    _encode = lambda x: 1 if x in vals else 0 
-    if newcol is None:
-        newcol = col
-        drop = False
-    df[newcol] = df[col].apply(_encode)
-    if drop:
-        return df.dropna()
-    return df
-
-def Apply10EncodingOnColumnWithMultiValuesInCell(df, column, values, drop = True):
-    if df is None:
-        raise ValueError('Fnc "Apply10Encoding": df is None')
-    if df[column].dtype != 'O':
-        raise ValueErro('Fnc "Apply10Encoding": Invalid dtype "{}" for column "{}""'.format(df[columns].dtype, column))
-    dfcopy = df.copy(deep = True)
-    for val in values:
-        newcol = column + '_' + val
-        dfcopy[newcol] = dfcopy[column].apply(lambda x: 1 if val in x else 0)
-    if drop == True:
-        dfcopy = dfcopy.drop(column, axis = 1)
-    return dfcopy    
-    
-def AnalyseNanColumns(df):
-    if df is None:
-        raise ValueError('Fnc "AnalyseNanColumns": df is None')
-    PrintLine('Analysis of Columns with NaN values')
-    dfnull = df.isnull().mean()
-    
-    if dfnull.shape[0] == 0:
-        print('All columns have values')
-        PrintLine('Analysis of Columns with NaN values finished')
-        return
-    tmp = dfnull[dfnull == 0]
-    if tmp.shape[0] > 0:
-        print('Columns having all values: ')
-        print(tmp)
-    tmp = dfnull[(dfnull > 0) & (dfnull <= 0.05)]
-    if tmp.shape[0] > 0:
-        print('Columns having > 0% and <= 5% missing values: ')
-        print(tmp)
-    tmp = dfnull[(dfnull > 0.05) & (dfnull <= 0.2)]
-    if tmp.shape[0] > 0:
-        print('Columns having > 5% and <= 20% missing values: ')
-        print(tmp)
-    tmp = dfnull[(dfnull > 0.2) & (dfnull <= 0.5)]
-    if tmp.shape[0] > 0:
-        print('Columns having > 20% and <= 50% missing values: ')
-        print(tmp)
-    tmp = dfnull[(dfnull > 0.5) & (dfnull <= 0.7)]
-    if tmp.shape[0] > 0:
-        print('Columns having > 50% and <= 70% missing values: ')
-        print(tmp)
-    tmp = dfnull[dfnull > 0.7]
-    if tmp.shape[0] > 0:
-        print('Columns having > 70% missing values: ')
-        print(tmp)
-    PrintLine('Analysis of Columns with NaN values finished')
-    
-def AnalyseValueCounts(df, columns = None, types = None, considerMaxValues = 20):
-    if df is None:
-        raise ValueError('Fnc "AnalyseValueCounts": df is None')
-    if (considerMaxValues < 0 or considerMaxValues > 30):
-        raise ValueError('Fnc "AnalyseValueCounts": considerMaxValues < 0 or too large (> 30)', considerMaxValues)
-    logtxt = 'Considering columns: '
-    if columns is None or types is None:
-        if columns is None and types is None:
-            columns = list(df.columns)
-        elif object is None:
-            columns = list(df.columns)
-        elif columns is None:
-            columns = list(SelectColumnsByType(df, types).columns)
-    if len(columns) == 0:
-        print('No columns to analyse value counts for. Passed columns and types: ', columns, types)
-        return
-    print(logtxt, columns)
-    PrintLine('Dataframe value counts analye started')
-    for col in columns:
-        PrintLine('', character = '*')
-        vcser = df[col].value_counts()
-        if vcser.shape[0] > considerMaxValues:
-            print('More than {} different values: '.format(considerMaxValues), vcser.shape[0])
-            print('Name: ', col, ', dtype: ', vcser.dtype)
-        else:
-            print(vcser)
-        PrintLine('', character = '*')
-    PrintLine('Dataframe value counts analye finished')
-    
-    
-    
-def AnalyseDataframe(df):
-    if df is None:
-        raise ValueError('Fnc "AnalyseDataframe": df is None')
-    PrintLine('Dataframe analysis started')
-    print('Shape = ', df.shape)
-    AnalyseNanColumns(df)
-    
-    
-    
-    
-    
-    PrintLine('Dataframe analysis finished')
-
-def ConvertColumnToType(df, columns, newtype = 'float64', replace = None):
-    '''
-    INPUT:
-    df: Pandas Dataframe
-    columns: Column/s to convert
-    newtype: Final type
-    replace: Dictionary like { '': { "rep1", "rep2", ...} }
-    
-    OUTPUT:
-    Dataframe with converted column
-    '''
-    if df is None:
-        raise ValueError('Fnc "ConvertColumnToType": df is None')
-    dfcopy = df.copy(deep = True)
-    if type(columns) is str:
-        columns = [columns]
-    PrintLine('Start replacing and converting columns')
-    for col in columns:
-        if replace is not None:
-            if type(replace) is not dict:
-                raise ValueError('Fnc "ConvertColumnToType": type of replace is no dictionary: ', replace)
-            for key in replace.keys():
-                if df[col].dtype == newtype:
-                    print('Column "{}" dtype is already {}'.format(col, newtype))
-                    break
-                val = replace[key]
-                print(key, val)
-                for repval in val:
-                    print('Replacing "{}" with "{}"'.format(repval, key))
-                    dfcopy[col] = dfcopy[col].apply(lambda x: x.replace(repval, key).strip())
-        dfcopy[col] = dfcopy[col].astype(newtype)    
-    PrintLine('Replacing and converting columns finished')
-    return dfcopy
-
-def CleanValuesInColumn(df, columns, trim = True, clean = None):
+def SelectColumnsByWildcard(df, wildcards, logfound = False):
     '''
     INPUT:
     df: Dataframe
-    columns: column name or list of columns
-    trim: remove leading and trailing spaces
-    clean: dictionary<string, list<string>>: replace any string value in list with key
+    wildcards: string or list of strings
     
-    OUTPUT:
-    Dataframe with cleaned column/s
+    OUTPUT: 
+    Dataframe with columns
     '''
     if df is None:
-        raise ValueError('Fnc "GetUniqueValuesFromColumn": df is None')
-    dfcopy = df.copy(deep = True)
-    if type(columns) is str:
-        columns = [columns]
-    PrintLine('Start cleaning values in columns:')
-    for col in columns:
-        if dfcopy[col].dtype == 'O':
-            applied = ''
-            if clean is not None:
-                for key in clean.keys():
-                    repvalues = clean[key]
-                    print('current key "{}", current repvals = "{}"'.format(key, repvalues))
-                    if len(repvalues) == 1:
-                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False)
-                    elif len(repvalues) == 2:
-                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False).str.replace(repvalues[1], key, regex = False)
-                    elif len(repvalues) == 3:
-                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False).str.replace(repvalues[1], key, regex = False).str.replace(repvalues[2], key, regex = False)
-                    elif len(repvalues) == 4:
-                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False).str.replace(repvalues[1], key, regex = False).str.replace(repvalues[2], key, regex = False).str.replace(repvalues[3], key, regex = False)
-                    else:
-                        print('Number of replace values not supported: ', len(repvalues))
-            if trim:
-                dfcopy[col] = dfcopy[col].apply(lambda x: x.strip())
-        else:
-            print('Cannot apply cleaning on column "{}", dtype is: '.format(col, dfcopy[col].dtype))
-    return dfcopy
+        raise ValueError('Fnc "SelectColumnsByWildcard": df is None')
+    if wildcards is None or len(wildcards) < 1:
+        raise ValueError('Fnc "SelectColumnsByWildcard": No wildcards passed: ', wildcards)
+    rem = []
+    if type(wildcards) is not list:
+        wildcards = [wildcards]
+    allColumns = list(df.columns)
+    PrintLine('Start finding and keeping columns matchting to wildcards: {}'.format(wildcards))
+    keep = []
+    for col in allColumns:
+        for wc in wildcards:
+            if IsMatch(col, wc):
+                keep.append(col)
+                break
+    if len(keep) == 0:
+        print('No column names found matchting to wildcards')
+    elif logfound:
+        print('Columns found to keep: ', keep)
+    PrintLine('Finished keeping columns matchting to wildcards: {}'.format(len(keep)))
+    return df[ keep ]
+   
+
+def TrainingFull(df):
+    pass
     
-def GetUniqueValuesListFromColumn(df, column, trim = False, clean = None, splitby = None, asc = None, ignoreempty = False):
-    if df is None:
-        raise ValueError('Fnc "GetUniqueValuesFromColumn": df is None')
-    if type(column) is not str:
-        raise ValueError('Fnc "GetUniqueValuesFromColumn": column is not string: "', column, '"')
-    dfcopy = None
-    if trim or clean is not None:
-        dfcopy = CleanValuesInColumn(df, column, trim, clean)
-    else:
-        dfcopy = df.copy(deep = True)
-    vals = dfcopy[column].unique()
-    finalVals = []
-    if splitby is None:
-        finalVals = vals
-    elif dfcopy[column].dtype == 'O':
-        for val in vals:
-            splitted = val.split(splitby)
-            for splitvalue in splitted:
-                if splitvalue in finalVals:
-                    continue
-                finalVals.append(splitvalue)
-                print('Appended: ', splitvalue)
-        if trim:
-            for ind in range(len(finalVals)):
-                finalVals[ind] = finalVals[ind].strip()
-    if ignoreempty:
-        finalVals = [x for x in finalVals if type(x) is str and len(x) > 0]
-    if asc is not None:
-        if type(asc) is bool:
-            finalVals.sort(reverse = asc == False)
-    return finalVals
-    
-    
+##################################################
+
+
+
+
+
+
+
+
+
+##################################################
+
+
 '''
 def SplitCategoricalValues(df, dirValTypes):
     categoricalColumns, needsToEncodeBin, needsToEncodeMulti, needsToEncodeStringBin, needsToEncodeStringMulti, ignoreColumns4Encoding = {}, {}, {}, {}, {}, []
