@@ -4,7 +4,7 @@ This module provides parameterizable functions
 for analyzing data frames with log output.
 """
 
-__version__ = '0.1'
+__version__ = '0.2'
 __author__ = 'Benjamin Wenner'
 
 
@@ -17,12 +17,14 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.pipeline import FeatureUnion
 from sklearn import preprocessing
+from sqlalchemy import create_engine
 
 import fnmatch as fnmatch
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sb
+
 
 import glob
 import os
@@ -39,13 +41,38 @@ def IsMatch(txt, wildcard):
 def PrintLine(text = '', number = 20, character = '-'):
     print(character * number, text, character * number)
 
-def DfTailHead(df, count = 15):    
-    count = min(count, df.shape[0])
-    pd.concat([df.head(count), df.tail(count)])
-    
+def DfTailHead(df, count = 15):
+    count = min(abs(count) if count != 0 else 15, df.shape[0])
+    return pd.concat([df.head(count), df.tail(count)])
+
+def CheckIfValuesContainedInEachOther(values):
+    probdir = {}
+    for i1, v1 in enumerate(values):
+        probs = []
+        for i2, v2 in enumerate(values):
+            if i1 >= i2:
+                continue
+            if v1 in v2 or v2 in v1:
+                probs.append(v2)
+        if len(probs) > 0:
+            probdir[v1] = probs
+    if len(probdir.keys()) > 0:
+        PrintLine('Following values are contained in others:')
+        for key in list(probdir.keys()):
+            print(key, ' - ', probdir[key])
+        PrintLine()
+    else:
+        PrintLine('No values are contained in others')
+    return len(probdir.keys()) > 0
+ 
 def GetAsList(object):
     '''
+    INPUT:
+    object: float, int, string, list, set, tuple, ndaray
     
+    OUTPUT:
+    returns [x] for string/number, list[x] for list types, 
+    list[x.values] for ndarray
     '''
     if str(type(object)) in [
         'float', 'float32', 'float64', "<class 'float'>"
@@ -61,38 +88,38 @@ def GetAsList(object):
         return list(object.values)
     raise ValueError('Type unknown: ', type(object))
     
-def AnalyseColumn(df, column, analyseNan = False, analyseValueCounts = False):
+def AnalyzeColumn(df, column, analyzeNan = True, analyzeVc = True):
     '''
     INPUT:
     df: Dataframe
-    column: column name or list of names to analyse
+    column: column name or list of names to Analyze
     '''
     if not type(column) is list:
         column = [column]    
     PrintLine('Analysing column/s "{}"'.format(column))
     for col in column:
         print('Datatype (dtype) = ', df[col].dtype)
-        if analyseNan:
-            AnalyseNanColumns(df, col)
-        if analyseValueCounts:
-            AnalyseValueCounts(df, columns = col)
+        if analyzeNan:
+            AnalyzeNanColumns(df, col)
+        if AnalyzeValueCounts:
+            AnalyzeValueCounts(df, columns = col)
     PrintLine('Finished analysing column/s "{}"'.format(column))
 
-def AnalyseNanColumns(df, columns = None):
+def AnalyzeNanColumns(df, columns = None):
     '''
     INPUT:
     df: Dataframe
-    columns = None or column name or list of columns
+    columns = str or list
     '''
     if df is None:
-        raise ValueError('Fnc "AnalyseNanColumns": df is None')
-    if columns is not None and type(columns) is not list:
-        columns = [columns]
-    PrintLine('Analysis of Columns with NaN values')
+        raise ValueError('Fnc "AnalyzeNanColumns": df is None')
     if columns is not None:
-        dfnull = df[columns].isnull().mean()
+        columns = GetAsList(columns)
     else:
-        dfnull = df.isnull().mean()
+        columns = list(df.columns)
+    PrintLine('Analysis of Columns with NaN values')
+
+    dfnull = df[columns].isnull().mean()
     
     if dfnull.shape[0] == 0:
         print('All columns have values')
@@ -104,7 +131,7 @@ def AnalyseNanColumns(df, columns = None):
     dfnull = dfnull.rename(renameDic)
     tmp = dfnull[dfnull == 0]
     if tmp.shape[0] > 0:
-        print('Columns having all values: {0}, {1:.2f}%'.format(len(tmp), len(tmp) * 100 / len(df.columns)))
+        print('Columns having all values: {0}, {1:.2f}%'.format(len(tmp), len(tmp) * 100 / len(columns)))
         print(tmp)
     tmp = dfnull[(dfnull > 0) & (dfnull <= 0.05)]
     if tmp.shape[0] > 0:
@@ -130,7 +157,7 @@ def AnalyseNanColumns(df, columns = None):
     
 
     
-def AnalyseValueCounts(df, columns = None, types = None, considerMaxValues = 20):
+def AnalyzeValueCounts(df, columns = None, types = None, considerMaxValues = 20):
     '''
     INPUT:
     df: Dataframe
@@ -139,9 +166,9 @@ def AnalyseValueCounts(df, columns = None, types = None, considerMaxValues = 20)
     considerMaxValues: Print values if # is <= xrange
     '''
     if df is None:
-        raise ValueError('Fnc "AnalyseValueCounts": df is None')
+        raise ValueError('Fnc "AnalysisValueCounts": df is None')
     if (considerMaxValues < 0 or considerMaxValues > 30):
-        raise ValueError('Fnc "AnalyseValueCounts": considerMaxValues < 0 or too large (> 30)', considerMaxValues)
+        raise ValueError('Fnc "AnalysisValueCounts": considerMaxValues < 0 or too large (> 30)', considerMaxValues)
     logtxt = 'Considering columns: '
     if columns is None or types is None:
         if columns is None and types is None:
@@ -157,7 +184,7 @@ def AnalyseValueCounts(df, columns = None, types = None, considerMaxValues = 20)
                 columns = [col for col in columnstmp if col in columns]
             
     if len(columns) == 0:
-        print('No columns to analyse value counts for. Passed columns and types: ', columns, types)
+        print('No columns to Analyze value counts for. Passed columns and types: ', columns, types)
         return
     print(logtxt, columns)
     PrintLine('Dataframe value counts analye started')
@@ -170,23 +197,80 @@ def AnalyseValueCounts(df, columns = None, types = None, considerMaxValues = 20)
         else:
             print(vcser)
         PrintLine('', character = '*')
-    PrintLine('Dataframe value counts analye finished')
+    PrintLine('Dataframe value counts analysis finished')
     
     
     
-def AnalyseDataframe(df):
+def AnalyzeDataFrame(df):
+    '''
+    INPUT:
+    df: Dataframe
+    '''
     if df is None:
-        raise ValueError('Fnc "AnalyseDataframe": df is None')
+        raise ValueError('Fnc "AnalyzeDataframe": df is None')
     PrintLine('Dataframe analysis started')
-    print('Shape = ', df.shape)
-    AnalyseNanColumns(df)
+    print('Shape: ', df.shape)
     
+    print('Number of duplicate rows: ', df.shape[0] - df.drop_duplicates().shape[0])
     
-    
-    
+    AnalyzeNanColumns(df)
     
     PrintLine('Dataframe analysis finished')
 
+def GetEqualColumns(df1, df2):
+    '''
+    INPUT:
+    df1, df2: DataFrame
+    
+    OUTPUT:
+    List of equal columns or empty list, 
+    list columns df1, 
+    list columns df2 
+    '''
+    cols1 = list(df1.columns)
+    cols2 = list(df2.columns)
+    ret = [ col for col in cols1 if col in cols2 ]
+    if len(ret) > 0:
+        print('Equal columns found: ', ret)
+    else:
+        print('No equal columns found')
+    return ret, cols1, cols2
+    
+    
+def AnalyzeEqualColumns(df1, df2):
+    '''
+    INPUT:
+    df1, df2: DataFrame
+    '''
+    PrintLine('Starting comparing dataframes:')
+    equals, cols1, cols2 = GetEqualColumns(df1, df2)
+    
+    if len(equals) > 0:
+        for col in equals:
+            uq1 = set(df1[col].unique())
+            uq2 = set(df2[col].unique())
+            
+            if len(uq1 - uq2) == 0 and len(uq2 - uq1) == 0:
+                print('Column {}: All values in both columns contained'.format(col))
+            diff = uq1 - uq2
+            if len(diff) > 0:
+                print('Column {}: Values contained in df1 but not in df2: '.format(col), diff)
+            diff = uq2 - uq1
+            if len(diff) > 0:
+                print('Column {}: Values contained in df2 but not in df2: '.format(col), diff)
+        vc1 = df1.id.value_counts()
+        vc2 = df2.id.value_counts()
+        diff = [ (msgid, vc1[msgid], vc2[msgid]) for msgid in vc1.index if vc1[msgid] != vc2[msgid] ]
+        if len(diff) > 0:
+            print('Column {}: Value counts differ: '.format(col), diff)
+        else:
+            print('Column {}: Value counts are equal'.format(col))
+    else:
+        print('No equal column names found:')
+        print(cols1)
+        print(cols2)
+    PrintLine('Finished comparing dataframes:')
+    
 def AppendColumnByValuesInCell(df, column, newcolumn, values):
     '''
     INPUT:
@@ -376,16 +460,16 @@ def CleanValuesInColumn(df, columns, trim = True, clean = None):
                     repvalues = clean[key]
                     if len(repvalues) == 1:
                         dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False)
-                        applied = 'replaced "{}" for "{}"'.format(key, repvalues)
+                        applied = 'replaced "{}" by "{}"'.format(repvalues, key)
                     elif len(repvalues) == 2:
                         dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False).str.replace(repvalues[1], key, regex = False)
-                        applied = 'replaced "{}" for "{}"'.format(key, repvalues)
+                        applied = 'replaced "{}" by "{}"'.format(repvalues, key)
                     elif len(repvalues) == 3:
                         dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False).str.replace(repvalues[1], key, regex = False).str.replace(repvalues[2], key, regex = False)
-                        applied = 'replaced "{}" for "{}"'.format(key, repvalues)
+                        applied = 'replaced "{}" by "{}"'.format(repvalues, key)
                     elif len(repvalues) == 4:
                         dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False).str.replace(repvalues[1], key, regex = False).str.replace(repvalues[2], key, regex = False).str.replace(repvalues[3], key, regex = False)
-                        applied = 'replaced "{}" for "{}"'.format(key, repvalues)
+                        applied = 'replaced "{}" by "{}"'.format(repvalues, key)
                     else:
                         print('Number of replace values not supported: ', len(repvalues))
             if trim:
@@ -592,11 +676,11 @@ def GetUniqueValuesListFromColumn(df, column, trim = False, clean = None, splitb
                 if splitvalue in finalVals:
                     continue
                 finalVals.append(splitvalue)
-        if trim:
-            for ind in range(len(finalVals)):
-                if type(finalVals) is not str:
-                    continue
-                finalVals[ind] = finalVals[ind].strip()
+    if trim:
+        for ind in range(len(finalVals)):
+            if type(finalVals) is not str:
+                continue
+            finalVals[ind] = finalVals[ind].strip()
     if ignoreempty:
         finalVals = [x for x in finalVals if type(x) is str and len(x) > 0]
     if asc is not None:
@@ -642,6 +726,21 @@ def ImputeNanValues(df, impute = 'NaN', strategy = 'median', axis = 0):
     impar = imputer.fit_transform(dfcopy)
     dfimp = pd.DataFrame(impar, columns = list(dfcopy.columns))
     return dfimp
+
+def GetCommonColumns(df1, df2):
+    return [str(col) for col in list(df1.columns) if str(col) in list(df2.columns)]
+    
+def MergeFrames(df1, df2, how = 'inner', on = None):
+    '''
+    INPUT:
+    
+    OUTPUT:
+    returns merged dataframe
+    '''
+    if on is none:
+        on = GetCommonColumns(df1, df2)
+    PrintLine('Dataframes merge: {}, {}'.format(how, str(on)))
+    return df1.merge(df2, how = how, on = on)
     
 def MinMaxOfSeries(serie):
     return min(serie), max(serie)
@@ -747,7 +846,14 @@ def RemoveAllRowsHavingAnyMissingValue(df, log = True):
 
 
     
-def AnalysePCAResult(pca, pcaind, usedComponents, df, text = False, consider = 0.08):
+def AnalyzePCAResult(pca, pcaind, df, text = False, consider = 0.08):
+    '''
+    INPUT:
+    pca: PCA
+    pcaind: index of component to Analyze and plot
+    text: print components by absolute weight descending
+    consider: plot components with absolute weight >= x
+    '''
     dfpcp = pd.DataFrame(pca.components_[pcaind], index = df.columns)
     dfpcp['ordered'] = np.abs(dfpcp)
     dfpcp = dfpcp.sort_values('ordered', axis = 0, ascending = False)
@@ -847,6 +953,28 @@ def RemoveColumnsHavingOnlyOneValue(df):
     dfret = df[keep]
     PrintLine('finished searching and removing columns with one value:')
     return dfret
+   
+def RemoveDuplicateRows(df):
+    '''
+    INPUT:
+    df: Dataframe
+    '''
+    PrintLine('Removing duplicate rows')
+    print('Current shape: ', df.shape)
+    dupCnt = df.shape[0] - df.drop_duplicates().shape[0]
+    if dupCnt == 0:
+        print('No duplicates in dataframe')
+        PrintLine()
+        return df
+    print('There are ', dupCnt, ' duplicates in the data')
+    df = df.drop_duplicates()
+    dupCnt = df.shape[0] - df.drop_duplicates().shape[0]
+    if dupCnt == 0:
+        print('All duplicates successfully removed. New size: ', df.shape)
+    else:
+        print('Could not remove all duplicates. Still remaining: ', dupCnt)
+    PrintLine()
+    return df
     
     
 def RemoveRowsWithAllMissingValues(df, subset = None):
@@ -880,12 +1008,13 @@ def RemoveRowsByThresh(df, thresh, subset = None):
     PrintLine('Rows removed by thresh = "{}": {}'.format(thresh, df.shape[0] - dfcopy.shape[0]))
     return dfcopy
 
-def RemoveRowsWithValueInColumn(df, column, values):
+def RemoveRowsWithValueInColumn(df, column, values, option = None):
     '''
     INPUT: 
     df: Dataframe
     column: string or collection of strings
     values: values to search in column. If row with value found, it will be removed.
+    option: 'startswith', 'contains'
     
     OUTPUT:
     Dataframe without rows having values in column
@@ -894,7 +1023,17 @@ def RemoveRowsWithValueInColumn(df, column, values):
         raise ValueError('Fnc "RemoveRowsWithValueInColumn": df is None')
     if type(values) is not list:
         values = [values]
-    dfret = df[~df[column].isin(values)]
+    if option is not None:
+        if option == 'startswith':
+            for val in values:
+                dfret = df[~df[column].str.startswith(val)]
+        elif option == 'contains':
+            for val in values:
+                dfret = df[~df[column].str.contains(val)]
+        else:
+            raise ValueError('Fnc "RemoveRowsWithValueInColumn": option is invalid: ', option)
+    else:
+        dfret = df[~df[column].isin(values)]
     print('{} rows (ca. {}%) have been removed with value/s "{}" in column "{}"'.format(df.shape[0] - dfret.shape[0], "{0:.2f}".format((df.shape[0] - dfret.shape[0]) * 100 / df.shape[0]), values, column))
     return df[~df[column].isin(values)]
     
@@ -1070,7 +1209,36 @@ def SelectColumnsByWildcard(df, wildcards, logfound = False):
         print('Columns found to keep: ', keep)
     PrintLine('Finished keeping columns matchting to wildcards: {}'.format(len(keep)))
     return df[ keep ]
+
+
+def SqlCheckValuesInTable(df, table, engine):
+    '''
+    INPUT:
+    df: Dataframe
+    table: string
+    engine: Sqlalchemy engine
+    
+    OUTPUT:
+    returns true or false
+    '''   
    
+def QuickMerge(df1, df2, how = 'inner'):
+    '''
+    finds common columns and makes a join all equal columns
+    INPUT:
+    df1, df2: DataFrames
+    '''
+    possibleCols = GetCommonColumns(df1, df2)
+    if len(possibleCols) == 0:
+        raise ValueError('No common columns found to merge on')
+    PrintLine('Merging dataframes on columns: ')
+    print(possibleCols)
+    df = df1.merge(df2, how = how, on = possibleCols)
+    print('New shape: ', df.shape)
+    PrintLine()
+    return df
+
+    
 
 def TrainingFull(df):
     pass
