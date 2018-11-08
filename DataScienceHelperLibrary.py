@@ -8,15 +8,19 @@ __version__ = '0.2'
 __author__ = 'Benjamin Wenner'
 
 
-from collections import defaultdict
 from encodings.aliases import aliases
 from multiprocessing import Pool
+import nltk
+nltk.download(['punkt', 'wordnet', 'stopwords'])
 from nltk.stem import WordNetLemmatizer
 from nltk.tokenize import word_tokenize
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.pipeline import FeatureUnion
+
 from sklearn import preprocessing
+from sklearn.metrics import f1_score
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import FeatureUnion
+from sklearn.pipeline import Pipeline
+
 from sqlalchemy import create_engine
 
 import fnmatch as fnmatch
@@ -28,6 +32,8 @@ import seaborn as sb
 
 import glob
 import os
+import string
+import datetime
 import sys
 
 # Algorithms
@@ -36,14 +42,50 @@ from sklearn.decomposition import PCA
 
 
 def IsMatch(txt, wildcard):
+    '''
+    Check if text contains certain subtext by wildcard.
+    
+    INPUT:
+    txt: string: text to search
+    wildcard: string: wildcard applied to text
+    '''
     return fnmatch.fnmatch(txt, wildcard)
 
-def PrintLine(text = '', number = 20, character = '-'):
+def PrintLine(text = '-', number = 20, character = '-'):
     print(character * number, text, character * number)
 
 def DfTailHead(df, count = 15):
+    '''
+    Returns concatination from dataframes head and tail.
+    
+    INPUT:
+    df: Dataframe
+    count: int: number of rows for both head and tail
+    
+    OUTPUT:
+    dataframe: concatination of both
+    '''
     count = min(abs(count) if count != 0 else 15, df.shape[0])
     return pd.concat([df.head(count), df.tail(count)])
+
+def IsNullOrEmpty(text):
+    return text is None or len(text) == 0
+
+def KeepLetters(text):
+    '''
+    Removes all characters that are not alpha.
+    '''
+    if text is None or text is not str:
+        return text
+    return ''.join(s for s in text if s.isalpha())
+
+def KeepLettersNumbers(text):
+    '''
+    Removes all characters that are not alphanumeric.
+    '''
+    if text is None:
+        return text
+    return ''.join(s for s in text if s.isalnum())
 
 def CheckIfValuesContainedInEachOther(values):
     probdir = {}
@@ -65,10 +107,10 @@ def CheckIfValuesContainedInEachOther(values):
         PrintLine('No values are contained in others')
     return len(probdir.keys()) > 0
  
-def GetAsList(object):
+def GetAsList(element):
     '''
     INPUT:
-    object: float, int, string, list, set, tuple, ndaray
+    element: float, int, string, list, set, tuple, ndaray
     
     OUTPUT:
     returns [x] for string/number, list[x] for list types, 
@@ -93,6 +135,8 @@ def AnalyzeColumn(df, column, analyzeNan = True, analyzeVc = True):
     INPUT:
     df: Dataframe
     column: column name or list of names to Analyze
+    analyzeNan: bool
+    analyzeVec: bool
     '''
     if not type(column) is list:
         column = [column]    
@@ -188,15 +232,22 @@ def AnalyzeValueCounts(df, columns = None, types = None, considerMaxValues = 20)
         return
     print(logtxt, columns)
     PrintLine('Dataframe value counts analye started')
+    colsWithOnlyOneValue = []
     for col in columns:
         PrintLine('', character = '*')
         vcser = df[col].value_counts()
+        if vcser.shape[0] == 1:
+            colsWithOnlyOneValue.append(col)
         if vcser.shape[0] > considerMaxValues:
             print('More than {} different values: '.format(considerMaxValues), vcser.shape[0])
             print('Name: ', col, ', dtype: ', vcser.dtype)
         else:
             print(vcser)
         PrintLine('', character = '*')
+    if len(colsWithOnlyOneValue) > 0:
+        PrintLine('There are columns with only one value: ', number = 10, character = '!')
+        print(colsWithOnlyOneValue)
+        PrintLine('', number = 10, character = '!')
     PrintLine('Dataframe value counts analysis finished')
     
     
@@ -214,6 +265,7 @@ def AnalyzeDataFrame(df):
     print('Number of duplicate rows: ', df.shape[0] - df.drop_duplicates().shape[0])
     
     AnalyzeNanColumns(df)
+    AnalyzeValueCounts(df)
     
     PrintLine('Dataframe analysis finished')
 
@@ -334,7 +386,7 @@ def ApplyOneHotEncodingOnColumnWithMultiValuesInCell(df, column, values, drop = 
         newcol = column + '_' + val
         newcolumns.append(newcol)
         #dfcopy[newcol] = dfcopy[dfcopy[column].apply(lambda x: 1 if val in x else 0)]
-        dfcopy[newcol] = dfcopy[column].str.contains(val, regex = False) * 1
+        dfcopy[newcol] = dfcopy[column].str.contains(val) * 1
         if ignoreEmpty:
             val = list(dfcopy[newcol].unique())
             if len(val) == 1:
@@ -459,16 +511,16 @@ def CleanValuesInColumn(df, columns, trim = True, clean = None):
                 for key in clean.keys():
                     repvalues = clean[key]
                     if len(repvalues) == 1:
-                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False)
+                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key)
                         applied = 'replaced "{}" by "{}"'.format(repvalues, key)
                     elif len(repvalues) == 2:
-                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False).str.replace(repvalues[1], key, regex = False)
+                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key).str.replace(repvalues[1], key)
                         applied = 'replaced "{}" by "{}"'.format(repvalues, key)
                     elif len(repvalues) == 3:
-                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False).str.replace(repvalues[1], key, regex = False).str.replace(repvalues[2], key, regex = False)
+                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key).str.replace(repvalues[1], key).str.replace(repvalues[2], key)
                         applied = 'replaced "{}" by "{}"'.format(repvalues, key)
                     elif len(repvalues) == 4:
-                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key, regex = False).str.replace(repvalues[1], key, regex = False).str.replace(repvalues[2], key, regex = False).str.replace(repvalues[3], key, regex = False)
+                        dfcopy[col] = dfcopy[col].str.replace(repvalues[0], key).str.replace(repvalues[1], key).str.replace(repvalues[2], key).str.replace(repvalues[3], key)
                         applied = 'replaced "{}" by "{}"'.format(repvalues, key)
                     else:
                         print('Number of replace values not supported: ', len(repvalues))
@@ -532,7 +584,7 @@ def ReadCsvFiles(directory, wildcards, extract = False, delimeter = ','):
         raise ValueError('Fnc "ReadCsvFiles": df is None')
 '''
     
-def ReadCsvFiles(files, delimiter = ',', merge = False):
+def ReadCsvFiles(files, delimiter = ','):
     '''
     INPUT:
     files: List of file names
@@ -728,24 +780,43 @@ def ImputeNanValues(df, impute = 'NaN', strategy = 'median', axis = 0):
     return dfimp
 
 def GetCommonColumns(df1, df2):
+    '''
+    Returns a list of identical column names
+    
+    INPUT:
+    df1, df2: Dataframe
+    
+    OUTPUT:
+    list of equal column names
+    '''
     return [str(col) for col in list(df1.columns) if str(col) in list(df2.columns)]
     
 def MergeFrames(df1, df2, how = 'inner', on = None):
     '''
     INPUT:
+    df1, df2: Dataframe
+    
     
     OUTPUT:
     returns merged dataframe
     '''
-    if on is none:
+    if on is None or len(on) == 0:
         on = GetCommonColumns(df1, df2)
+        if len(on) == 0:
+            raise ValueError('Fnc "MergeFrames": no equal column names found')
     PrintLine('Dataframes merge: {}, {}'.format(how, str(on)))
     return df1.merge(df2, how = how, on = on)
     
 def MinMaxOfSeries(serie):
+    '''
+    Returns minimum and maximum from serie
+    '''
     return min(serie), max(serie)
 
 def NormalizeSeries(serie):
+    '''
+    Normalize a serie by min and max value
+    '''
     s_min, s_max = MinMaxOfSeries(serie)
     return (serie - s_min) / (s_max - s_min)
 
@@ -1023,6 +1094,7 @@ def RemoveRowsWithValueInColumn(df, column, values, option = None):
         raise ValueError('Fnc "RemoveRowsWithValueInColumn": df is None')
     if type(values) is not list:
         values = [values]
+    PrintLine('Start removing rows')
     if option is not None:
         if option == 'startswith':
             for val in values:
@@ -1034,9 +1106,63 @@ def RemoveRowsWithValueInColumn(df, column, values, option = None):
             raise ValueError('Fnc "RemoveRowsWithValueInColumn": option is invalid: ', option)
     else:
         dfret = df[~df[column].isin(values)]
-    print('{} rows (ca. {}%) have been removed with value/s "{}" in column "{}"'.format(df.shape[0] - dfret.shape[0], "{0:.2f}".format((df.shape[0] - dfret.shape[0]) * 100 / df.shape[0]), values, column))
-    return df[~df[column].isin(values)]
+    print('{} rows (ca. {}%) have been removed having value/s "{}" in column "{}"'.format(df.shape[0] - dfret.shape[0], "{0:.2f}".format((df.shape[0] - dfret.shape[0]) * 100 / df.shape[0]), values, column))
+    print('New shape: ', dfret.shape)
+    PrintLine()
+    return dfret
+
+def RemoveRowsByValuesOverAverage(df, column, times = 6):
+    '''
+    INPUT:
+    df: DataFrame
+    column: Column in df
+    times: Number: if column_mean * times < cell then drop row
+    '''
+    if df is None:
+        raise ValueError('Fnc "RemoveRowsByValuesOverAverage": df is None')
+    mean = times
+    dfret = None
+    PrintLine('Start dropping rows with value/textlength > ' + str(times) + ' * column average')
+    if df[column].dtype == 'O':
+        mean = mean * df[column].str.len().mean()
+        dfret = df[df[column].str.len() < mean]
+    else:
+        mean = mean * df[column].mean()
+        dfret = df[df[column] < mean]
+    print('Rows removed: ', df.shape[0] - dfret.shape[0])
+    print('New shape: ', dfret.shape)
+    PrintLine('Finished removing')
+    return dfret
     
+def SelectRowsWithValueInColumn(df, column, values, option = None):
+    '''
+    INPUT: 
+    df: Dataframe
+    column: string or collection of strings
+    values: values to search in column..
+    option: 'startswith', 'contains'
+    
+    OUTPUT:
+    Dataframe with rows having values in column
+    '''
+    if df is None:
+        raise ValueError('Fnc "SelectRowsWithValueInColumn": df is None')
+    if type(values) is not list:
+        values = [values]
+    if option is not None:
+        if option == 'startswith':
+            for val in values:
+                dfret = df[df[column].str.startswith(val)]
+        elif option == 'contains':
+            for val in values:
+                dfret = df[df[column].str.contains(val)]
+        else:
+            raise ValueError('Fnc "RemoveRowsWithValueInColumn": option is invalid: ', option)
+    else:
+        dfret = df[df[column].isin(values)]
+    print('{} rows (ca. {}%) have been removed not having value/s "{}" in column "{}"'.format(df.shape[0] - dfret.shape[0], "{0:.2f}".format((df.shape[0] - dfret.shape[0]) * 100 / df.shape[0]), values, column))
+    print('New shape: ', dfret.shape)
+    return dfret
 
 def ScaleFrame(df, copy = True, withMean = True, withStd = True):
     '''
@@ -1126,6 +1252,10 @@ def SplitDataTrainTest(X, y, testSize = 0.3, randomState = 42):
     returns XTrain, XTest, yTrain, yTest
     '''
     XTrain, XTest, yTrain, yTest = train_test_split(X, y, test_size = testSize, random_state = randomState)
+    PrintLine('Test/Train split (test size = {}, random state = {}:'.format(testSize, randomState))
+    print('Training: X = {0}, y = {1}'.format(XTrain.shape, yTrain.shape))
+    print('Test    : X = {0}, y = {1}'.format(XTest.shape, yTest.shape))
+    PrintLine()
     return XTrain, XTest, yTrain, yTest
     
 def SplitDataInXY(df, colx, coly):
@@ -1224,15 +1354,20 @@ def SqlCheckValuesInTable(df, table, engine):
    
 def QuickMerge(df1, df2, how = 'inner'):
     '''
-    finds common columns and makes a join all equal columns
+    Performs by default an inner join on columns with equal column names
+    Raises ValueException if there are no equal columns
+    
     INPUT:
     df1, df2: DataFrames
+    
+    OUTPUT:
+    Joined tables
     '''
     possibleCols = GetCommonColumns(df1, df2)
     if len(possibleCols) == 0:
         raise ValueError('No common columns found to merge on')
-    PrintLine('Merging dataframes on columns: ')
-    print(possibleCols)
+    PrintLine('Merging dataframes: ')
+    print('Joined dataframes on equal columns: ', possibleCols)
     df = df1.merge(df2, how = how, on = possibleCols)
     print('New shape: ', df.shape)
     PrintLine()
@@ -1240,8 +1375,60 @@ def QuickMerge(df1, df2, how = 'inner'):
 
     
 
-def TrainingFull(df):
-    pass
+def TrainModel(model, XTest, yTest):
+    '''
+    INPUT:
+    model: Model providing .fit()
+    XTest: Test data (Numnpy array or Dataframe)
+    yTest: test labelds (Numnpy array or Dataframe)
+    '''
+    if not callable(getattr(model, 'fit')):
+        raise ValueError('Fnc "TrainModel": model has no callablemethod "fit"')
+    X = XTest
+    y = yTest
+    if not type(XTest) == np.ndarray:
+        #if type(XTest) == pd.DataFrame:
+        #    print('XTest: Dataframe passed, using values')
+        #    X = XTest.values
+        #else:
+            raise ValueError('Fnc "TrainModel": XTest is not ndarray')
+    if not type(yTest) == np.ndarray:
+        #if type(yTest) == pd.DataFrame:
+        #    print('yTest: Dataframe passed, using values')
+        #    y = yTest.values
+        #else:
+            raise ValueError('Fnc "TrainModel": yTest is not ndarray')
+    PrintLine('Start fitting model to data')
+    start = datetime.datetime.now()
+    fitted = model.fit(X, y)
+    PrintLine('Train time: ' + str(datetime.datetime.now() - start ))
+    return fitted
+
+
+def MultiClassifierScoreF1(yTest, yPred):
+    """
+    INPUT:
+    yTest: Array of labels
+    yPred: Array of predicted labels
+
+    OUTPUT:
+    score: Median of F1 scores for each output classifier
+    """
+    f1Scores = []
+    for i in range(np.shape(yPred)[1]):
+        f1 = f1_score(np.array(yTest)[:, i], yPred[:, i], average = None)
+        f1Scores.append(f1)
+        
+    score = np.median(f1Scores)
+    return score
+
+
+
+
+
+
+
+
     
 ##################################################
 
