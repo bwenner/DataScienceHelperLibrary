@@ -7,13 +7,8 @@ for analyzing data frames with log output.
 __version__ = '0.2'
 __author__ = 'Benjamin Wenner'
 
-
 from encodings.aliases import aliases
 from multiprocessing import Pool
-import nltk
-nltk.download(['punkt', 'wordnet', 'stopwords'])
-from nltk.stem import WordNetLemmatizer
-from nltk.tokenize import word_tokenize
 
 from sklearn import preprocessing
 from sklearn.metrics import f1_score
@@ -28,7 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sb
-
+import sqlalchemy
 
 import glob
 import os
@@ -40,6 +35,14 @@ import sys
 from sklearn.linear_model import LinearRegression
 from sklearn.decomposition import PCA
 
+from sklearn.cluster import MiniBatchKMeans
+
+
+NumberTypes = [float, int, np.int64, np.int32, np.float32, np.float64]
+
+def bla():
+    ProgressBar.ProgressBar
+
 
 def IsMatch(txt, wildcard):
     '''
@@ -48,13 +51,45 @@ def IsMatch(txt, wildcard):
     INPUT:
     txt: string: text to search
     wildcard: string: wildcard applied to text
+    
+    OUTBUT:
+    true or false
     '''
-    return fnmatch.fnmatch(txt, wildcard)
+    wildcard = GetAsList(wildcard)
+    checks = []
+    for wc in wildcard:
+        checks.append(fnmatch.fnmatch(txt, wc))
+    return any(checks)
 
-def PrintLine(text = '-', number = 20, character = '-'):
-    print(character * number, text, character * number)
+def GetMatches(inplist, wildcard, without = None):
+    '''
+    Check if list contains certain elements by wildcard.
+    
+    INPUT:
+    inplist: list with strings to search
+    wildcard: string or list of string: wildcard applied to text
+    
+    OUTPUT:
+    list of matched elements
+    '''
+    wildcards = GetAsList(wildcard)
+    if not without is None:
+        without = GetAsList(without)
+    ret = [str(x) for x in inplist if any(IsMatch(x, wc) for wc in wildcards)]
+    if without is None:
+        return ret
+    return [str(x) for x in ret if not any(IsMatch(x, wo) for wo in without)]
+    
 
-def DfTailHead(df, count = 15):
+def PrintLine(text = '-', n = 20, character = '-'):
+    print(character * n, text, character * n)
+
+def PrintEncapsulate(text, n = 20, character = '-', header = ''):
+    PrintLine(header, n = n, character = character)
+    print(text)
+    PrintLine(n = n, character = character)
+
+def TailHead(df, n = 15):
     '''
     Returns concatination from dataframes head and tail.
     
@@ -65,11 +100,29 @@ def DfTailHead(df, count = 15):
     OUTPUT:
     dataframe: concatination of both
     '''
-    count = min(abs(count) if count != 0 else 15, df.shape[0])
-    return pd.concat([df.head(count), df.tail(count)])
+    n = min(abs(n) if n != 0 else 15, df.shape[0])
+    return pd.concat([df.head(n), df.tail(n)])
 
-def IsNullOrEmpty(text):
-    return text is None or len(text) == 0
+def WCS(df, wildcards):
+    '''
+    Perform wildcard search on column names
+    
+    INPUT:
+    df: Dataframe
+    wildcards: string or list of strings
+    
+    OUTPUT:
+    Dataframe with matched columns
+    '''
+    wildcards = GetAsList(wildcards)
+    matches = GetMatches(df.columns, wildcards)
+    return df[matches]
+
+def IsNullOrEmpty(inp):
+    return IsNull(inp) or (type(inp) not in NumberTypes and len(inp) == 0)
+
+def IsNull(inp):
+    return inp is None or (type(inp) in NumberTypes and np.isnan(inp))
 
 def KeepLetters(text):
     '''
@@ -116,19 +169,30 @@ def GetAsList(element):
     returns [x] for string/number, list[x] for list types, 
     list[x.values] for ndarray
     '''
-    if str(type(object)) in [
+    if str(type(element)) in [
         'float', 'float32', 'float64', "<class 'float'>"
         'int', 'int32', 'int64', "<class 'int'>", 
         'str', "<class 'str'>" 
     ]:
-        return [object]
-    if type(object) == list:
-        return object
-    if type(object) == set or type(object) == tuple:
-        return list[object]
-    if type(object) == np.ndarray:
-        return list(object.values)
-    raise ValueError('Type unknown: ', type(object))
+        return [element]
+    if type(element) == list or type(element) == set:
+        return element
+    if type(element) == set or type(element) == tuple:
+        return list[element]
+    if type(element) == np.ndarray:
+        return list(element.values)
+    if type(element) == sqlalchemy.sql.elements.quoted_name:
+        return element
+    raise ValueError('Type unknown: ', type(element))
+
+
+def ReduceMemory(df):
+    '''
+    Tries to reduce memory based on min/max values.
+    '''
+    
+    
+    
     
 def AnalyzeColumn(df, column, analyzeNan = True, analyzeVc = True):
     '''
@@ -156,7 +220,7 @@ def AnalyzeNanColumns(df, columns = None):
     columns = str or list
     '''
     if df is None:
-        raise ValueError('Fnc "AnalyzeNanColumns": df is None')
+        raise ValueError('df is None')
     if columns is not None:
         columns = GetAsList(columns)
     else:
@@ -210,10 +274,10 @@ def AnalyzeValueCounts(df, columns = None, types = None, considerMaxValues = 20)
     considerMaxValues: Print values if # is <= xrange
     '''
     if df is None:
-        raise ValueError('Fnc "AnalysisValueCounts": df is None')
+        raise ValueError('df is None')
     if (considerMaxValues < 0 or considerMaxValues > 30):
-        raise ValueError('Fnc "AnalysisValueCounts": considerMaxValues < 0 or too large (> 30)', considerMaxValues)
-    logtxt = 'Considering columns: '
+        raise ValueError('considerMaxValues < 0 or too large (> 30)', considerMaxValues)
+
     if columns is None or types is None:
         if columns is None and types is None:
             columns = list(df.columns)
@@ -230,7 +294,7 @@ def AnalyzeValueCounts(df, columns = None, types = None, considerMaxValues = 20)
     if len(columns) == 0:
         print('No columns to Analyze value counts for. Passed columns and types: ', columns, types)
         return
-    print(logtxt, columns)
+
     PrintLine('Dataframe value counts analye started')
     colsWithOnlyOneValue = []
     for col in columns:
@@ -250,7 +314,26 @@ def AnalyzeValueCounts(df, columns = None, types = None, considerMaxValues = 20)
         PrintLine('', number = 10, character = '!')
     PrintLine('Dataframe value counts analysis finished')
     
+def AnalyzeDataTypes(df):
+    '''
+    INPUT:
+    df: Dataframe
+    column: column name or list of names to Analyze
+    analyzeNan: bool
+    analyzeVec: bool
+    '''
+    PrintLine('Analysing data types/s')
+    tmpdir = {}
     
+    for col in df.columns:
+        dtype = df[col].dtype
+        if dtype in tmpdir.keys():
+            tmpdir[dtype] += 1
+        else:
+            tmpdir[dtype] = 1
+    for k, v in tmpdir.items():
+        print(k, ': ', v)
+    PrintLine('Finished analysing datatypes')    
     
 def AnalyzeDataFrame(df):
     '''
@@ -258,12 +341,13 @@ def AnalyzeDataFrame(df):
     df: Dataframe
     '''
     if df is None:
-        raise ValueError('Fnc "AnalyzeDataframe": df is None')
+        raise ValueError('df is None')
     PrintLine('Dataframe analysis started')
     print('Shape: ', df.shape)
     
     print('Number of duplicate rows: ', df.shape[0] - df.drop_duplicates().shape[0])
     
+    AnalyzeDataTypes(df)
     AnalyzeNanColumns(df)
     AnalyzeValueCounts(df)
     
@@ -322,6 +406,44 @@ def AnalyzeEqualColumns(df1, df2):
         print(cols1)
         print(cols2)
     PrintLine('Finished comparing dataframes:')
+
+
+def ApplyBinaryEncoding(serinp):
+    '''
+    INPUT:
+    df: Dataframe
+    column: column to search values
+    
+    OUTPUT:
+    returns dataframe with newcolumn where 1 means value from column
+            contains an item from values
+    '''
+    if serinp is None:
+        print('Cannot apply BinaryEncoding: Series is none')
+        return serinp
+    
+    ser = serinp.copy(deep = True)
+    setValues = set(sorted([x for x in ser.unique() if not IsNull(x)]))
+    if len(setValues) < 2:
+        print('Column contains max 1 value')
+        return ser
+    if len(setValues) == 2 and all(x in setValues for x in [0, 1]):
+        print('Values already 0/1 encoded in column: ', ser.name)
+        return
+    
+    print('Binary encoding column: ', serinp.name)
+    try:
+        tmpdic = {}
+        for ind, val in enumerate(setValues):
+            tmpdic[val] = ind
+        vc1 = ser.value_counts()
+        sernew = ser.apply(lambda x: x if not x in setValues else tmpdic[x])
+        vc2 = sernew.value_counts()
+        print('Old value counts: ', vc1)
+        print('New value counts: ', vc2)
+        return sernew
+    except:
+        print('Error applying binary encoding on column: ', ser.name)
     
 def AppendColumnByValuesInCell(df, column, newcolumn, values):
     '''
@@ -352,7 +474,7 @@ def Apply10Encoding(df, column, vals, newcol = None, drop = True):
     df: data frame with columns of type 'object'
     '''
     if df is None:
-        raise ValueError('Fnc "Apply10Encoding": df is None')
+        raise ValueError('df is None')
     if type(vals) is not list:
         vals = [vals]
     _encode = lambda x: 1 if x in vals else 0 
@@ -375,9 +497,9 @@ def ApplyOneHotEncodingOnColumnWithMultiValuesInCell(df, column, values, drop = 
     df: Dataframe with one hot encoded column
     '''
     if df is None:
-        raise ValueError('Fnc "Apply10Encoding": df is None')
+        raise ValueError('df is None')
     if df[column].dtype != 'O':
-        raise ValueErro('Fnc "Apply10Encoding": Invalid dtype "{}" for column "{}""'.format(df[columns].dtype, column))
+        raise ValueError('Invalid dtype "{}" for column "{}""'.format(df[columns].dtype, column))
     dfcopy = df.copy(deep = True)
     newcolumns = []
     PrintLine('Start applying one hot encoding for columns "{}" and values "{}"'.format(column, values))
@@ -407,9 +529,9 @@ def ApplyOneHotEncoding(df, columns, ignoreEmpty = True):
     df, newcols: Dataframe with one hot encoded columns that were passed and list of new columns.
     '''
     if df is None:
-        raise ValueError('Fnc "ApplyFillMissingValuesWithMean": df is None')
+        raise ValueError('df is None')
     if columns is None or len(columns) < 1:
-        print('Fnc "OneHotEncodeColumns": columns is empty/None')
+        print('columns is empty/None')
         return df
     if not type(columns) is list:
         columns = [columns]
@@ -446,7 +568,7 @@ def ApplyFillMissingValuesWithMean(df):
     df: Dataframe and nan values filled with mean
     '''
     if df is None:
-        raise ValueError('Fnc "ApplyFillMissingValuesWithMean": df is None')
+        raise ValueError('df is None')
     fill_na = lambda x: x.fill_na(x.mean())
     df.apply(fill_na, axis = 0)
     return df
@@ -465,7 +587,7 @@ def ConvertColumnToType(df, columns, newtype = 'float64', replace = None):
     Dataframe with converted column
     '''
     if df is None:
-        raise ValueError('Fnc "ConvertColumnToType": df is None')
+        raise ValueError('df is None')
     dfcopy = df.copy(deep = True)
     if type(columns) is not list:
         columns = [columns]
@@ -473,7 +595,7 @@ def ConvertColumnToType(df, columns, newtype = 'float64', replace = None):
     for col in columns:
         if replace is not None:
             if type(replace) is not dict:
-                raise ValueError('Fnc "ConvertColumnToType": type of replace is no dictionary: ', replace)
+                raise ValueError('type of replace is no dictionary: ', replace)
             for key in replace.keys():
                 if df[col].dtype == newtype:
                     print('Column "{}" dtype is already {}'.format(col, newtype))
@@ -499,7 +621,7 @@ def CleanValuesInColumn(df, columns, trim = True, clean = None):
     Dataframe with cleaned column/s
     '''
     if df is None:
-        raise ValueError('Fnc "GetUniqueValuesFromColumn": df is None')
+        raise ValueError('df is None')
     dfcopy = df.copy(deep = True)
     if type(columns) is not list:
         columns = [columns]
@@ -546,13 +668,13 @@ def CountMissingValuesInColumn(df, column):
     dfs: list of missing values
     '''
     if df is None:
-        raise ValueError('Fnc "CountMissingValuesInColumn": df is None')
+        raise ValueError('df is None')
     if type(column) is str:
         if len(column) == 0:
-            raise ValueError('Fnc "CountMissingValuesInColumn": column name is empty')
+            raise ValueError('column name is empty')
         column = [column]
     if column is None or len(column) < 0:
-        raise ValueError('Fnc "CountMissingValuesInColumn": files is None or empty')
+        raise ValueError('files is None or empty')
     results = []
     dfnull = df.isnull().sum()
     for col in column:
@@ -571,9 +693,9 @@ def ReadCsvFiles(directory, wildcards, extract = False, delimeter = ','):
 '''
 '''    
     if directory is None or len(directory) == 0:
-        raise ValueError('Fnc "ReadCsvFiles": directory is None/empty')
+        raise ValueError('directory is None/empty')
     if wildcards is None or len(wildcards) == 0:
-        raise ValueError('Fnc "ReadCsvFiles": wildcards is None/empty')
+        raise ValueError('wildcards is None/empty')
     wildcards = GetAsList(wildcards)
     try:
         files = []
@@ -581,7 +703,7 @@ def ReadCsvFiles(directory, wildcards, extract = False, delimeter = ','):
             
     
     except:
-        raise ValueError('Fnc "ReadCsvFiles": df is None')
+        raise ValueError('df is None')
 '''
     
 def ReadCsvFiles(files, delimiter = ','):
@@ -593,7 +715,7 @@ def ReadCsvFiles(files, delimiter = ','):
     dfs: overall status (bool) all succ, list of data frames
     '''
     if files is None or len(files) < 0:
-        raise ValueError('Fnc "ReadCsvFiles": files is None or empty')
+        raise ValueError('files is None or empty')
     if type(files) is not list:
         files = [files]
     dfs = {}
@@ -601,6 +723,8 @@ def ReadCsvFiles(files, delimiter = ','):
     notworked = []
     for file in files:
         try:
+            filesize = os.path.getsize(file)
+            print(file, ', size: ', filesize)
             curdf = pd.read_csv(file, delimiter = delimiter)
             dfs[file] = curdf
             print('Dataframe loaded from {}: shape = {}'.format(file, curdf.shape))
@@ -638,7 +762,7 @@ def GetColumnsHavingNan(df):
     ret: returns list of columns having nan values
     '''
     if df is None:
-        raise ValueError('Fnc "GetColumnsHavingNan": df is None')
+        raise ValueError('df is None')
     return df.isnull()
 
     
@@ -651,9 +775,9 @@ def GetColumnHavingNanPercent(df, percent):
     lst: returns dataframe of columns having more than 0.x missing values
     '''
     if df is None:
-        raise ValueError('Fnc "GetColumnsHavingNanPercent": df is None')
+        raise ValueError('df is None')
     if percent > 1 or percent < 0:
-        raise ValueError('Fnc "GetColumnsHavingNanPercent": percent is out of bounds [0,1]: ', percent)
+        raise ValueError('percent is out of bounds [0,1]: ', percent)
     return df[df.columns[df.isnull().mean() > percent]]
 
     
@@ -666,7 +790,7 @@ def GetColumnsHavingNoNan(df):
     lst: returns list of columns having no nan values
     '''
     if df is None:
-        raise ValueError('Fnc "GetColumnsHavingNoNan": df is None')
+        raise ValueError('df is None')
     return df[~df.isnull().any()]
     #return df[~df.isnull().mean() == 0]
 
@@ -684,11 +808,11 @@ def GetPropInGroupB(df, group, prop = None):
     status and get mean for job satisfaction)
     '''
     if df is None:
-        raise ValueError('Fnc "GetPropAInGroupB": df is None')
+        raise ValueError('df is None')
     if not prop in df.columns:
-        raise ValueError(str.format('Fnc "GetPropAInGroupB": prop: column "{}" not in dataframe', prop))
+        raise ValueError(str.format('column "{}" not in dataframe', prop))
     if not group in df.columns:
-        raise ValueError(str.format('Fnc "GetPropAInGroupB": group: column "{}" not in dataframe', group))
+        raise ValueError(str.format('column "{}" not in dataframe', group))
     dfmean = df.groupby(group).mean()
     if prop is None:
         return dfmean
@@ -709,9 +833,9 @@ def GetUniqueValuesListFromColumn(df, column, trim = False, clean = None, splitb
     List of unique values
     '''
     if df is None:
-        raise ValueError('Fnc "GetUniqueValuesFromColumn": df is None')
+        raise ValueError('df is None')
     if type(column) is not str:
-        raise ValueError('Fnc "GetUniqueValuesFromColumn": column is not string: "', column, '"')
+        raise ValueError('column is not string: "', column, '"')
     dfcopy = None
     if trim or clean is not None:
         dfcopy = CleanValuesInColumn(df, column, trim, clean)
@@ -752,7 +876,7 @@ def PlotHeatmap(df, method = 'spearman', square = True, vmax = 1.0):
     Dataframe with imputedp9 columns that were passed.
     '''
     if df is None:
-        raise ValueError('Fnc "PlotHeatmap": df is None')
+        raise ValueError('df is None')
     corMatData = df.copy(deep = True)
     corMat = corMatData.corr(method = method)
     fig, ax = plt.subplots()
@@ -772,7 +896,7 @@ def ImputeNanValues(df, impute = 'NaN', strategy = 'median', axis = 0):
     Dataframe with imputedp9 columns that were passed.
     '''
     if df is None:
-        raise ValueError('Fnc "NormalizeColumns": df is None')
+        raise ValueError('df is None')
     dfcopy = df.copy(deep = True)
     imputer = preprocessing.Imputer( missing_values = impute, strategy = strategy, axis = axis)
     impar = imputer.fit_transform(dfcopy)
@@ -803,7 +927,7 @@ def MergeFrames(df1, df2, how = 'inner', on = None):
     if on is None or len(on) == 0:
         on = GetCommonColumns(df1, df2)
         if len(on) == 0:
-            raise ValueError('Fnc "MergeFrames": no equal column names found')
+            raise ValueError('no equal column names found')
     PrintLine('Dataframes merge: {}, {}'.format(how, str(on)))
     return df1.merge(df2, how = how, on = on)
     
@@ -831,7 +955,7 @@ def NormalizeColumns(df, columns = None, newCols = None):
     Dataframe with normalized columns that were passed.
     '''
     if df is None:
-        raise ValueError('Fnc "NormalizeColumns": df is None')
+        raise ValueError('df is None')
     dfcopy = df.copy(deep = True)
     if columns is None:
         columns = list(dfcopy.columns)
@@ -861,7 +985,7 @@ def ReduceDimensions_PCA(df, n_comp = None, columns = None):
     df: Dataframe whose rows all have values
     '''
     if df is None:
-        raise ValueError('Fnc "ReduceDimensions_PCA": df is None')
+        raise ValueError('df is None')
     if columns is None:
         columns = list(df.columns)
     if n_comp is None:
@@ -871,33 +995,47 @@ def ReduceDimensions_PCA(df, n_comp = None, columns = None):
     dfcopy = _pca.fit_transform(dfcopy)
     return pd.DataFrame(dfcopy), _pca
     
-def PCAPlotExplainedVariances(pca, features = None):
+def PCAPlotExplainedVariances(pca, top = None):
     '''
     INPUT:
     pca: PCA components
     features: Number of features to analyze
     '''
     variances = [val / 100 for val in pca.explained_variance_]
-    if features is None or features <= 0:
-        features = len(variances)
+    if top is None or top <= 0:
+        top = len(variances)
     plt.title('Analysis of principal components')
     plt.ylabel('Explained Variance')
     plt.xlabel('Number of Components')
-    _ = plt.bar(range(0, features), variances[:features])
+    _ = plt.bar(range(0, top), variances[:top])
     
-def PCAPlotCumulatedVariances(pca, features = None):
+def PCAPlotCumulatedVariances(pca, top = None):
     '''
     INPUT:
     pca: PCA components
     features: Number of features to analyze
     '''
     variances = [val / 100 for val in pca.explained_variance_]
-    if features is None or features <= 0:
-        features = len(variances)
+    if top is None or top <= 0:
+        top = len(variances)
     plt.title('Analysis of principal components')
     plt.ylabel('Cumulated Explained Variance')
     plt.xlabel('Number of Components')
-    _ = plt.plot(range(0, features), np.cumsum(variances)[:features])
+    _ = plt.plot(range(0, top), np.cumsum(variances)[:top])
+
+def PCAPlotCumulatedVarianceRatios(pca, top = None):
+    '''
+    INPUT:
+    pca: PCA components
+    features: Number of features to analyze
+    '''
+    if top is None or top <= 0:
+        top = len(pca.components_)
+    plt.title('Analysis of principal components')
+    plt.ylabel('Cumulative Explained Variance Ratio')
+    plt.xlabel('Number of Components')
+    _ = plt.plot(range(0, top), np.cumsum(pca.explained_variance_ratio_[:top]))
+
 
 def RemoveAllRowsHavingAnyMissingValue(df, log = True):
     '''
@@ -908,7 +1046,7 @@ def RemoveAllRowsHavingAnyMissingValue(df, log = True):
     df: Dataframe whose rows all have values
     '''
     if df is None:
-        raise ValueError('Fnc "RemoveAllRowsHavingAnyMissingValue": df is None')
+        raise ValueError('df is None')
     colstoremove = GetColumnsHavingNan(df)
     if log:
         for remcol in colstoremove:
@@ -955,7 +1093,7 @@ def RemoveColumnsByPercent(df, percent):
     Dataframe without those columns
     '''
     if df is None:
-        raise ValueError('Fnc "RemoveColumnsByPercent": df is None')
+        raise ValueError('df is None')
     dfcopy = df.copy(deep = True)
     cols2remove = GetColumnHavingNanPercent(dfcopy, percent)
     PrintLine('Start finding columns with % missing values >= {}'.format(percent * 100))
@@ -978,25 +1116,24 @@ def RemoveColumnsByWildcard(df, wildcards):
     Dataframe without columns
     '''
     if df is None:
-        raise ValueError('Fnc "RemoveColumnsByWildcard": df is None')
+        raise ValueError('df is None')
     if wildcards is None or len(wildcards) < 1:
-        raise ValueError('Fnc "RemoveColumnsByWildcard": No wildcards passed: ', wildcards)
+        raise ValueError('no wildcards passed: ', wildcards)
     rem = []
-    if type(wildcards) is not list:
-        wildcards = [wildcards]
-    allColumns = list(df.columns)
+    wildcards = GetAsList(wildcards)
+    allColumns = df.columns
     PrintLine('Start finding and removing columns matchting to wildcards: {}'.format(wildcards))
     dfcopy = df.copy(deep = True)
     for col in allColumns:
         for wc in wildcards:
-            if IsMatch(col, wc):
+            if IsMatch(str(col), str(wc)):
                 rem.append(col)
                 break
     keep = [ ac for ac in allColumns if ac not in rem ]
     if len(rem) == 0:
         print('No column names found matchting to wildcards')
     else:
-        print('Columns found to remove: ', rem)
+        print('Columns found to remove: ', len(rem))
     PrintLine('Finished removing columns matchting to wildcards')
     return dfcopy[ keep ]
     
@@ -1010,7 +1147,7 @@ def RemoveColumnsHavingOnlyOneValue(df):
     Dataframe without columns
     '''
     if df is None:
-        raise ValueError('Fnc "RemoveColumnsHavingOnlyOneValue": df is None')
+        raise ValueError('df is None')
     PrintLine('Start searching and removing columns with one value:')
     cols = []
     keep = []
@@ -1046,7 +1183,41 @@ def RemoveDuplicateRows(df):
         print('Could not remove all duplicates. Still remaining: ', dupCnt)
     PrintLine()
     return df
+
+def RemoveDuplicateRowsByColumn(df, column):
+    '''
+    Remove rows by index whose value in given column already exists.
     
+    INPUT:
+    df: Dataframe
+    column: string: column name
+    
+    OUTPUT:
+    cleaned dataframe
+    '''
+    if df is None:
+        raise ValueError('df is None')
+    
+    grpC = df.groupby(column)
+    indContentToDrop = []
+    dupValues = []
+    PrintLine('Removing duplicate rows')
+    
+    for key, grp in grpC:
+        if not len(grp) > 1:
+            continue
+        dupValues.append(key)
+        for key, val in enumerate(grp.index.sort_values()):
+            if key == 0:
+                continue
+            indContentToDrop.append(val)
+    dfret = df.drop(index = indContentToDrop)
+    diff = df.shape[0] - dfret.shape[0]
+    print('Rows removed: ', diff)
+    if diff > 0:
+        print('Values that are now unique: ', dupValues)
+    PrintLine()
+    return dfret
     
 def RemoveRowsWithAllMissingValues(df, subset = None):
     '''
@@ -1057,7 +1228,7 @@ def RemoveRowsWithAllMissingValues(df, subset = None):
     df: Dataframe without rows with all features = nan
     '''
     if df is None:
-        raise ValueError('Fnc "RemoveRowsWithAllMissingValues": df is None')
+        raise ValueError('df is None')
     return RemoveRowsByThresh(df, 1, subset)
 
 def RemoveRowsByThresh(df, thresh, subset = None):
@@ -1071,7 +1242,7 @@ def RemoveRowsByThresh(df, thresh, subset = None):
     df: Dataframe with rows having at least 'thresh' values <> nan
     '''
     if df is None:
-        raise ValueError('Fnc "RemoveRowsByThresh": df is None')
+        raise ValueError('df is None')
     dfcopy = df.copy(deep = True)
     if subset is not None and type(subset) is not list:
         subset = [subset]
@@ -1091,7 +1262,7 @@ def RemoveRowsWithValueInColumn(df, column, values, option = None):
     Dataframe without rows having values in column
     '''
     if df is None:
-        raise ValueError('Fnc "RemoveRowsWithValueInColumn": df is None')
+        raise ValueError('df is None')
     if type(values) is not list:
         values = [values]
     PrintLine('Start removing rows')
@@ -1103,7 +1274,7 @@ def RemoveRowsWithValueInColumn(df, column, values, option = None):
             for val in values:
                 dfret = df[~df[column].str.contains(val)]
         else:
-            raise ValueError('Fnc "RemoveRowsWithValueInColumn": option is invalid: ', option)
+            raise ValueError('option is invalid: ', option)
     else:
         dfret = df[~df[column].isin(values)]
     print('{} rows (ca. {}%) have been removed having value/s "{}" in column "{}"'.format(df.shape[0] - dfret.shape[0], "{0:.2f}".format((df.shape[0] - dfret.shape[0]) * 100 / df.shape[0]), values, column))
@@ -1119,7 +1290,7 @@ def RemoveRowsByValuesOverAverage(df, column, times = 6):
     times: Number: if column_mean * times < cell then drop row
     '''
     if df is None:
-        raise ValueError('Fnc "RemoveRowsByValuesOverAverage": df is None')
+        raise ValueError('df is None')
     mean = times
     dfret = None
     PrintLine('Start dropping rows with value/textlength > ' + str(times) + ' * column average')
@@ -1133,7 +1304,35 @@ def RemoveRowsByValuesOverAverage(df, column, times = 6):
     print('New shape: ', dfret.shape)
     PrintLine('Finished removing')
     return dfret
+ 
+def RenameColumn(df, old, new):
+    '''
+    If old column not contained in df or new column already contained in df,
+    ValueError will be raised.
     
+    INPUT:
+    df: Dataframe
+    old: old column name
+    new: new column name
+    '''
+    try:
+        if not isinstance(df, pd.DataFrame):
+            raise ValueError('df is no dataframe')
+        if new in df.columns:
+            raise ValueError('New column name already contained in dataframe')
+        if old not in df.columns:
+            raise ValueError('Old column not contained in dataframe')
+        dfret = df.rename(columns = {old : new})
+        #if new in dfret.columns and old not in dfret.columns:
+        #    PrintLine('Column renamed: {0} -> {1}'.format(old, new))
+        #else:
+        #    PrintLine('Column could not be renamed: {0} -> {1}'.format(old, new), character = '!')    
+        return dfret
+    except:
+        PrintLine('Error: Column could not be renamed: {0} -> {1}'.format(old, new), character = '!')
+        print ("Unexpected error:", sys.exc_info())
+        return df
+
 def SelectRowsWithValueInColumn(df, column, values, option = None):
     '''
     INPUT: 
@@ -1146,7 +1345,7 @@ def SelectRowsWithValueInColumn(df, column, values, option = None):
     Dataframe with rows having values in column
     '''
     if df is None:
-        raise ValueError('Fnc "SelectRowsWithValueInColumn": df is None')
+        raise ValueError('df is None')
     if type(values) is not list:
         values = [values]
     if option is not None:
@@ -1157,7 +1356,7 @@ def SelectRowsWithValueInColumn(df, column, values, option = None):
             for val in values:
                 dfret = df[df[column].str.contains(val)]
         else:
-            raise ValueError('Fnc "RemoveRowsWithValueInColumn": option is invalid: ', option)
+            raise ValueError('option is invalid: ', option)
     else:
         dfret = df[df[column].isin(values)]
     print('{} rows (ca. {}%) have been removed not having value/s "{}" in column "{}"'.format(df.shape[0] - dfret.shape[0], "{0:.2f}".format((df.shape[0] - dfret.shape[0]) * 100 / df.shape[0]), values, column))
@@ -1174,7 +1373,7 @@ def ScaleFrame(df, copy = True, withMean = True, withStd = True):
     '''
     
     if df is None:
-        raise ValueError('Fnc "ScaleValues": df is None')
+        raise ValueError('df is None')
     dfcopy = df.copy(deep = True)
     scaler = preprocessing.StandardScaler(copy = copy, with_mean = withMean, with_std = withStd)
     
@@ -1206,10 +1405,10 @@ def SplitDataInBinaryColumn(df, column):
     List of dataframes splitted by values
     '''
     if df is None:
-        raise ValueError('Fnc "SplitDataByValuesInColumn": df is None')
+        raise ValueError('df is None')
     values = list(df[column].unique())
     if len(values) > 2:
-        raise ValueError('Fnc "SplitDataByValuesInColumn": more than 2 values in column ', column)
+        raise ValueError('more than 2 values in column ', column)
     list1 = []
     list2 = []
     list3 = []
@@ -1232,7 +1431,7 @@ def SplitDataByValuesInColumn(df, column, values):
     List of dataframes splitted by values
     '''
     if df is None:
-        raise ValueError('Fnc "SplitDataByValuesInColumn": df is None')
+        raise ValueError('df is None')
     dflist = []
     log = 'Start splitting data by values ' + str(values) + ' in column: ' + str(column)
     PrintLine(log)
@@ -1269,7 +1468,7 @@ def SplitDataInXY(df, colx, coly):
     data frames x, y splitted by colx, coly
     '''
     if df is None:
-        raise ValueError('Fnc "SplitDataInXY": df is None')
+        raise ValueError('df is None')
     return df[colx], df[coly]
     
 
@@ -1304,7 +1503,7 @@ def SelectColumnsByType(df, typeinc, typeexc = None):
     To select Pandas datetimetz dtypes, use 'datetimetz' (new in 0.20.0) or 'datetime64[ns, tz]'
     '''
     if df is None:
-        raise ValueError('Fnc "SelectColumnsByType": df is None')
+        raise ValueError('df is None')
     if type(typeinc) is not list:
         typeinc = [typeinc]
     return df.select_dtypes(include = typeinc, exclude = typeexc)
@@ -1319,9 +1518,9 @@ def SelectColumnsByWildcard(df, wildcards, logfound = False):
     Dataframe with columns
     '''
     if df is None:
-        raise ValueError('Fnc "SelectColumnsByWildcard": df is None')
+        raise ValueError('df is None')
     if wildcards is None or len(wildcards) < 1:
-        raise ValueError('Fnc "SelectColumnsByWildcard": No wildcards passed: ', wildcards)
+        raise ValueError('no wildcards passed: ', wildcards)
     rem = []
     if type(wildcards) is not list:
         wildcards = [wildcards]
@@ -1383,7 +1582,7 @@ def TrainModel(model, XTest, yTest):
     yTest: test labelds (Numnpy array or Dataframe)
     '''
     if not callable(getattr(model, 'fit')):
-        raise ValueError('Fnc "TrainModel": model has no callablemethod "fit"')
+        raise ValueError('model has no callablemethod "fit"')
     X = XTest
     y = yTest
     if not type(XTest) == np.ndarray:
@@ -1391,13 +1590,13 @@ def TrainModel(model, XTest, yTest):
         #    print('XTest: Dataframe passed, using values')
         #    X = XTest.values
         #else:
-            raise ValueError('Fnc "TrainModel": XTest is not ndarray')
+            raise ValueError('XTest is not ndarray')
     if not type(yTest) == np.ndarray:
         #if type(yTest) == pd.DataFrame:
         #    print('yTest: Dataframe passed, using values')
         #    y = yTest.values
         #else:
-            raise ValueError('Fnc "TrainModel": yTest is not ndarray')
+            raise ValueError('yTest is not ndarray')
     PrintLine('Start fitting model to data')
     start = datetime.datetime.now()
     fitted = model.fit(X, y)
@@ -1424,84 +1623,95 @@ def MultiClassifierScoreF1(yTest, yPred):
 
 
 
-
-
-
-
-
+class Math:
+    class Calculus:
+        def DistanceEuler(x, y):
+            '''
+            INPUT
+            x - an array of matching length to array y
+            y - an array of matching length to array x
+            OUTPUT
+            euc - the euclidean distance between x and y
+            '''  
+            return np.linalg.norm(x - y)
+            
+        def DistanceManhatten(x, y):
+            '''
+            INPUT
+            x - an array of matching length to array y
+            y - an array of matching length to array x
+            OUTPUT
+            manhat - the manhattan distance between x and y
+            '''  
+            return sum(abs(e - s) for s, e in zip(x, y))
     
-##################################################
-
-
-
-
-
-
-
-
-
-##################################################
-
-
-'''
-def SplitCategoricalValues(df, dirValTypes):
-    categoricalColumns, needsToEncodeBin, needsToEncodeMulti, needsToEncodeStringBin, needsToEncodeStringMulti, ignoreColumns4Encoding = {}, {}, {}, {}, {}, []
-
-    for col in dirValTypes['categorical']:
-        if not col in df:
-            continue
-
-        dfind = df.columns.get_loc(col)
-
-        valueCounts = df.iloc[:, dfind].value_counts()
-        valCount = valueCounts.count()
-
-        categoricalColumns[col] = valCount
-
-        added = False
-        for ax in valueCounts.axes:
-            for val in ax.values:
-                try:
-                    nbr = int(val)
-
-                    # if any other value appears it must be new encoded
-                    if nbr == 0 or nbr == 1:
-                        continue
-
-                    if valCount == 2:
-                        if not col in needsToEncodeBin:
-                                needsToEncodeBin[col] = []
-                        if (val in needsToEncodeBin[col]):
-                            continue
-                        needsToEncodeBin[col].append( val )
-                    else:
-                        if not col in needsToEncodeMulti:
-                                needsToEncodeMulti[col] = []
-                        if (val in needsToEncodeMulti[col]):
-                            continue
-                        needsToEncodeMulti[col].append( val )
-                    added = True
-                except:
-                    if valCount == 2:
-                        if not col in needsToEncodeStringBin:
-                                needsToEncodeStringBin[col] = []
-                        if (val in needsToEncodeStringBin[col]):
-                            continue
-                        needsToEncodeStringBin[col].append( val )
-                    else:
-                        if not col in needsToEncodeStringMulti:
-                                needsToEncodeStringMulti[col] = []
-                        if (val in needsToEncodeStringMulti[col]):
-                            continue
-                        needsToEncodeStringMulti[col].append( val )
-                    added = True
-        if not added:
-            ignoreColumns4Encoding.append(col)
-
-    return categoricalColumns, needsToEncodeBin, needsToEncodeMulti, needsToEncodeStringBin, needsToEncodeStringMulti, ignoreColumns4Encoding    
-
-'''
-
-
-
-
+    
+    
+    class Statistic:
+        def CorrelationPearson(x, y):
+            '''
+            INPUT
+            x: an array of matching length to array y
+            y: an array of matching length to array x
+            
+        	  OUTPUT
+            corr: the pearson correlation coefficient for comparing x and y
+            '''
+            xMean, yMean = np.sum(x)/len(x), np.sum(y)/len(y) 
+            
+            xDiff = x - xMean
+            yDiffs = y - yMean
+          
+            numerator = np.sum(xDiff*yDiffs)
+            denominator = np.sqrt(np.sum(xDiff**2))*np.sqrt(np.sum(yDiffs**2))
+            corr = numerator/denominator
+                                    
+            return corr      
+    
+        def CorrelationSpearman(x, y):
+            '''
+            INPUT
+            x: an array of matching length to array y
+            y: an array of matching length to array x
+            
+            OUTPUT
+            corr - the spearman correlation coefficient for comparing x and y
+            '''
+            # Change each vector to ranked values
+            x = x.rank()
+            y = y.rank()
+            
+            # Compute Mean Values
+            xMean, yMean = np.sum(x)/len(x), np.sum(y)/len(y) 
+            
+            xDiff = x - xMean
+            yDiff = y - yMean
+            numerator = np.sum(xDiff*yDiff)
+            denominator = np.sqrt(np.sum(xDiff**2))*np.sqrt(np.sum(yDiff**2))
+                
+            corr = numerator/denominator
+                                    
+            return corr
+        
+        def CorrelationKendallsTau(x, y):
+            '''
+            INPUT
+            x: an array of matching length to array y
+            y: an array of matching length to array x
+            
+            OUTPUT
+            tau: the kendall's tau for comparing x and y
+            '''    
+            x = x.rank()
+            y = y.rank()
+            n = len(x)
+             
+            sum_vals = 0
+            for i, (x_i, y_i) in enumerate(zip(x, y)):
+                for j, (x_j, y_j) in enumerate(zip(x, y)):
+                    if i < j:
+                        sum_vals += np.sign(x_i - x_j)*np.sign(y_i - y_j)
+                                
+            tau = 2*sum_vals/(n*(n-1))
+            
+            return tau
